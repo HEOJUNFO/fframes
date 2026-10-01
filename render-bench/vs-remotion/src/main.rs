@@ -1,11 +1,14 @@
-//! Render-only twin of browser.jsx. No video encoder is instantiated.
+//! Fixed scene benchmark: render-to-PNG, standalone encoding and complete MP4 export.
 use std::{hint::black_box, path::Path, time::Instant};
 
 use fframes::{
-    AudioMap, Color, Duration, FFramesContext, Frame, Previewer, RenderOptions,
-    StaticMediaProvider, Svgr, Transform, Video,
+    AudioMap, Color, Duration, Encoder, EncoderFrame, EncoderOptions, EncoderOutput,
+    FFramesContext, FFramesLoggerVariant, Frame, Previewer, RenderOptions, StaticMediaProvider,
+    Svgr, Transform, Video,
 };
-use fframes_skia_renderer::{SkiaBackend, SkiaCpuCtx, SkiaFrameRenderer};
+use fframes_skia_renderer::{
+    SkiaBackend, SkiaCpuCtx, SkiaFFramesRenderer, SkiaFrameRenderer, SkiaPipelineConfig,
+};
 
 fframes::include_media_dir!(struct BenchMedia, "render-bench/vs-remotion/media");
 
@@ -145,6 +148,7 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
     let mut preview = Previewer::new(&video, &options).expect("preview initialization");
     let mut renderer = SkiaFrameRenderer::new(backend);
     let mut samples = Vec::new();
+    let mut pixels = Vec::new();
     for frame in 0..FRAMES + WARMUP {
         let start = Instant::now();
         // Includes scene generation, SVG conversion, and rasterization.
@@ -171,10 +175,91 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
             // Disk writes and correctness checks are excluded on both sides.
             std::fs::write(out.join(format!("{frame}.png")), &bytes)
                 .expect("save verification PNG");
+            pixels.push(image.pixels);
         }
     }
+    let hardware_encoding = name == "skia-metal";
+    let encoder_name = if hardware_encoding {
+        "h264_videotoolbox"
+    } else {
+        "libx264"
+    };
+    // Do not silently fall back to a different encoder in a benchmark.
+    let codec_name = std::ffi::CString::new(encoder_name).expect("encoder name");
+    assert!(
+        !unsafe { fframes::ffmpeg_sys_fframes::avcodec_find_encoder_by_name(codec_name.as_ptr()) }
+            .is_null(),
+        "required encoder {encoder_name} unavailable"
+    );
+    let codec_params: &[(&str, &str)] = if hardware_encoding {
+        &[("allow_sw", "0"), ("threads", "1")]
+    } else {
+        &[("preset", "medium"), ("threads", "1")]
+    };
+    let encoding_options = RenderOptions {
+        logger: FFramesLoggerVariant::Silent,
+        video_encoder_options: EncoderOptions {
+            preferred_encoder: Some(encoder_name),
+            codec_params: Some(codec_params),
+            bitrate: Some(8_000_000),
+            gop_size: 30,
+            qmin: 0,
+            qmax: 69,
+            ..Default::default()
+        },
+        ..options.clone()
+    };
+    let start = Instant::now();
+    // Encode the captured RGBA frames through the same encoder used by fframes.
+    // Include pixel conversion, codec setup, draining and final MP4 writes.
+    unsafe {
+        let logger = fframes::make_logger(FFramesLoggerVariant::Silent);
+        let encoder = Encoder::new(
+            EncoderOutput::Final { with_audio: false },
+            SIDE as i32,
+            SIDE as i32,
+            Grid::FPS as i32,
+            &out.join("encoded.mp4"),
+            &encoding_options,
+            &logger,
+        )
+        .unwrap_or_else(|error| panic!("video encoder: {error}"));
+        let mut frame = EncoderFrame::new(&encoder.video_stream)
+            .unwrap_or_else(|error| panic!("encoder frame: {error}"));
+        for (index, rgba) in pixels.iter().enumerate() {
+            frame.fill_from_rgba_pixmap(rgba);
+            frame.set_pts(index as i64);
+            encoder
+                .send_frame(&encoder.video_stream, &frame)
+                .unwrap_or_else(|error| panic!("encode frame: {error}"));
+        }
+        encoder
+            .flush_stream(&encoder.video_stream)
+            .unwrap_or_else(|error| panic!("drain encoder: {error}"));
+    }
+    let encoding_ms = start.elapsed().as_secs_f64() * 1000.;
+    let export_options = RenderOptions {
+        frame_range: Some(WARMUP..WARMUP + FRAMES),
+        ..encoding_options
+    };
+    let pipeline = SkiaFFramesRenderer::new(
+        SkiaPipelineConfig {
+            encoder_threads: 1,
+            ..Default::default()
+        },
+        backend,
+    );
+    let start = Instant::now();
+    fframes::render(out.join("export.mp4"), &video, pipeline, &export_options)
+        .expect("complete MP4 export");
+    let export_ms = start.elapsed().as_secs_f64() * 1000.;
+    let ffmpeg =
+        unsafe { std::ffi::CStr::from_ptr(fframes::ffmpeg_sys_fframes::av_version_info()) }
+            .to_string_lossy();
     println!(
         "{}",
-        serde_json::json!({"backend": name, "nodes": NODES, "samples": samples})
+        serde_json::json!({"backend": name, "nodes": NODES, "samples": samples,
+            "encoding_ms": encoding_ms, "export_ms": export_ms, "ffmpeg": ffmpeg,
+            "encoder": encoder_name, "hardware_encoding": hardware_encoding})
     );
 }

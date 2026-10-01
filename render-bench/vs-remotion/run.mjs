@@ -10,6 +10,8 @@ import {
   openBrowser,
   selectComposition,
   renderFrames,
+  renderMedia,
+  stitchFramesToVideo,
 } from "@remotion/renderer";
 import { summarize, markdown } from "./report.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +42,7 @@ async function remotionWorker(config) {
     const samples = [];
     const images = new Map();
     let dom;
-    await renderFrames({
+    const { assetsInfo } = await renderFrames({
       composition,
       serveUrl: config.bundle,
       puppeteerInstance: browser,
@@ -78,8 +80,73 @@ async function remotionWorker(config) {
     // Save captured buffers only after rendering has finished.
     for (const [frame, buffer] of images)
       await fs.writeFile(path.join(config.directory, `${frame}.png`), buffer);
+    const hardwareEncoding = process.platform === "darwin";
+    const encoder = hardwareEncoding ? "h264_videotoolbox" : "libx264";
+    const encodingCommands = [];
+    const encoding = {
+      codec: "h264",
+      ...(hardwareEncoding ? {} : { x264Preset: "medium" }),
+      videoBitrate: "8M",
+      gopSize: 30,
+      pixelFormat: "yuv420p",
+      muted: true,
+      hardwareAcceleration: hardwareEncoding ? "required" : "disable",
+      colorSpace: "bt601",
+      ffmpegOverride: ({ args }) => {
+        const selected = args[args.indexOf("-c:v") + 1];
+        if (selected !== "copy" && selected !== encoder)
+          throw new Error(`unexpected encoder: ${selected}`);
+        const command = [
+          ...args.slice(0, -1),
+          "-threads",
+          "1",
+          ...(hardwareEncoding && selected !== "copy"
+            ? ["-allow_sw", "0"]
+            : []),
+          args.at(-1),
+        ];
+        encodingCommands.push(command);
+        return command;
+      },
+    };
+    // Remotion encodes its captured PNGs; include decoding, setup and MP4 writes.
+    await fs.mkdir(assetsInfo.downloadMap.stitchFrames, { recursive: true });
+    const encodeStart = performance.now();
+    await stitchFramesToVideo({
+      ...encoding,
+      assetsInfo: {
+        ...assetsInfo,
+        imageSequenceName: path.join(config.directory, "%d.png"),
+        firstFrameIndex: config.warmup,
+        chunkLengthInSeconds: config.frames / composition.fps,
+      },
+      fps: composition.fps,
+      width: composition.width,
+      height: composition.height,
+      outputLocation: path.join(config.directory, "encoded.mp4"),
+    });
+    const encoding_ms = performance.now() - encodeStart;
+    const exportStart = performance.now();
+    await renderMedia({
+      ...encoding,
+      composition,
+      serveUrl: config.bundle,
+      puppeteerInstance: browser,
+      concurrency: 1,
+      frameRange: [config.warmup, config.warmup + config.frames - 1],
+      imageFormat: "png",
+      timeoutInMilliseconds: config.timeout,
+      logLevel: "error",
+      outputLocation: path.join(config.directory, "export.mp4"),
+    });
+    const export_ms = performance.now() - exportStart;
     return {
       samples,
+      encoding_ms,
+      export_ms,
+      encoder,
+      hardware_encoding: hardwareEncoding,
+      encoding_commands: encodingCommands,
       renderer: "@remotion/renderer renderFrames",
       concurrency: 1,
       browser: execFileSync(config.chrome, ["--version"], {
@@ -117,7 +184,7 @@ if (args[0] === "--worker") {
     rounds: 3,
     frames: 30,
     warmup: 3,
-    timeout: 300000,
+    timeout: 600000,
     backends: ["skia-cpu", "skia-gpu-if-available"],
     chrome: option("chrome", process.env.CHROME_PATH ?? "/usr/bin/chromium"),
   };
@@ -140,8 +207,21 @@ if (args[0] === "--worker") {
     if (err.code !== "ENOENT") throw err;
   }
   const report = {
-    schema_version: 5,
-    comparison: "Remotion renderFrames vs fframes Previewer + Skia",
+    schema_version: 7,
+    comparison:
+      "Remotion vs fframes + Skia: render-to-PNG, encoding and MP4 export",
+    encoding: {
+      codec: "h264",
+      target_bitrate: 8000000,
+      cpu_encoder: "libx264 medium",
+      macos_gpu_encoder: "h264_videotoolbox",
+      macos_remotion_encoder: "h264_videotoolbox",
+      gop: 30,
+      pixel_format: "yuv420p",
+      codec_threads: 1,
+      fps: 30,
+      audio: false,
+    },
     workload:
       "20 animated panels: 99,000 overlapping 16–28px rectangles, 8px blurred saturated glows, 12px drop shadows, and 1,000 changing DM Sans text digits painted last",
     plan,

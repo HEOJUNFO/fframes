@@ -16,17 +16,44 @@ fframes computes the same content directly with Skia CPU and, when available,
 Skia GPU (Metal on macOS, Vulkan elsewhere). GPU is skipped without a hardware device.
 Results apply to this React workload with many effects.
 
-All render serially without a video encoder. Times are medians of three 30-frame
-runs after three warm-up frames. PNG compression is included; startup, warm-up
-and disk writes are excluded.
+All use one rendering pipeline. Render-to-PNG times are medians of three 30-frame
+runs after three warm-up frames. PNG compression is included; video encoding,
+startup, warm-up and disk writes are excluded.
 
 The runner writes timings and versions to `results.json`, with a summary in
 `results.md`. Generated results and dependency lockfiles are ignored.
 
-Measured on Apple M5 Max, with Remotion 4.0.529:
+Apple M5 Max medians, Remotion 4.0.529:
 
-| Renderer                   | Median for 30 frames | Speedup vs Remotion |
-| -------------------------- | -------------------: | ------------------: |
-| fframes + Skia CPU         |              5.683 s |              16.86× |
-| fframes + Skia GPU (Metal) |              2.005 s |              47.80× |
-| Remotion                   |             95.843 s |                   — |
+| Renderer                   | Render-to-PNG, 30 frames | Speedup vs Remotion |
+| -------------------------- | -----------------------: | ------------------: |
+| fframes + Skia CPU         |                  5.794 s |              17.70× |
+| fframes + Skia GPU (Metal) |                  2.896 s |              35.42× |
+| Remotion                   |                102.580 s |                   — |
+
+The same entry point measures standalone encoding and complete MP4 export.
+H.264 settings: 30 frames at 30 fps, 8 Mbps target, GOP 30, yuv420p, no audio.
+On macOS, Skia GPU and Remotion use hardware VideoToolbox; CPU uses x264 medium.
+Elsewhere all use x264 medium. Each uses one codec thread. Encoder failures are
+reported rather than silently falling back.
+
+Standalone encoding includes RGBA conversion (fframes) or PNG decoding (Remotion),
+setup, flushing and writes. Complete export measures each framework's overlapping
+render/encode/mux pipeline directly. Browser launch and bundling are excluded.
+Matching target bitrates do not guarantee matching image quality.
+
+| Renderer                   | Encoder               | Prepared-frame encoding | Complete MP4 export |
+| -------------------------- | --------------------- | ----------------------: | ------------------: |
+| fframes + Skia CPU         | x264 medium           |                 1.343 s |             5.818 s |
+| fframes + Skia GPU (Metal) | VideoToolbox hardware |                 0.146 s |             1.609 s |
+| Remotion                   | VideoToolbox hardware |                 0.335 s |           100.152 s |
+
+GPU complete export is 62.26× faster than Remotion on this workload.
+
+```mermaid
+flowchart LR
+  A[SVG scene on CPU] --> B[Skia Metal on GPU]
+  B --> C[RGBA readback and YUV conversion on CPU]
+  C --> D[VideoToolbox hardware H.264]
+  D --> E[MP4 muxing and writes]
+```
