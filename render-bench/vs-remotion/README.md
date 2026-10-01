@@ -1,4 +1,4 @@
-# fframes + Skia vs Remotion
+# fframes vs Remotion
 
 ```sh
 ./render-bench/vs-remotion/run.sh
@@ -10,8 +10,9 @@ MP4 files and results go to `out/`; use `--out DIR` to choose a directory.
 One fixed 1000×1000 scene: 99,000 rectangles and 1,000 changing DM Sans text
 digits in 20 panels with blur, glow and shadows. Remotion uses an unkeyed list
 with 12 dependent effect/state updates per element. Results describe this workload.
-Skia CPU and available hardware GPUs render the same content. Both use
-100,000-entry text and geometry caches, with 51.2 MB of geometry per generation.
+fframes uses its built-in `CpuRenderingBackend` (tiny-skia) and Skia GPU when
+hardware is available. Both have 100,000-entry text caches. CPU keeps its default
+20-layer cache; Skia GPU uses 100,000 geometry entries with 51.2 MB per generation.
 
 The only timing is wall-clock time to finish a 30-frame H.264 MP4: scene rendering,
 pixel conversion, encoder setup, encoding, draining, muxing and file writes.
@@ -32,6 +33,6 @@ Apple M5 Max, Remotion 4.0.529, Chrome for Testing 149.0.7790.0:
 
 | Renderer                   | Encoder               | Complete MP4 export | Speedup vs Remotion |
 | -------------------------- | --------------------- | ------------------: | ------------------: |
-| fframes + Skia CPU         | x264 medium           |             5.708 s |              18.31× |
-| fframes + Skia GPU (Metal) | VideoToolbox hardware |             1.526 s |              68.51× |
-| Remotion                   | VideoToolbox hardware |           104.540 s |                   — |
+| fframes CPU (tiny-skia)    | x264 medium           |             8.373 s |              12.28× |
+| fframes + Skia GPU (Metal) | VideoToolbox hardware |             1.435 s |              71.62× |
+| Remotion                   | VideoToolbox hardware |           102.803 s |                   — |

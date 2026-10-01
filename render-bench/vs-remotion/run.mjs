@@ -179,7 +179,7 @@ if (args[0] === "--worker") {
     frames: 30,
     warmup: 3,
     timeout: 600000,
-    backends: ["skia-cpu", "skia-gpu-if-available"],
+    backends: ["cpu", "skia-gpu-if-available"],
     chrome: option("chrome", process.env.CHROME_PATH ?? "/usr/bin/chromium"),
   };
   const binary = path.resolve(
@@ -201,8 +201,9 @@ if (args[0] === "--worker") {
     if (err.code !== "ENOENT") throw err;
   }
   const report = {
-    schema_version: 8,
-    comparison: "Remotion vs fframes + Skia: complete H.264 MP4 export",
+    schema_version: 9,
+    comparison:
+      "Remotion vs fframes CPU and Skia GPU: complete H.264 MP4 export",
     encoding: {
       codec: "h264",
       target_bitrate: 8000000,

@@ -2,11 +2,12 @@
 use std::{path::Path, time::Instant};
 
 use fframes::{
-    AudioMap, Color, Duration, EncoderOptions, FFramesContext, FFramesLoggerVariant, Frame,
-    RenderOptions, StaticMediaProvider, Svgr, Transform, Video,
+    AudioMap, Color, Duration, EncoderOptions, FFramesContext, FFramesLoggerVariant,
+    FFramesRenderBackend, Frame, RenderOptions, StaticMediaProvider, Svgr, Transform, Video,
+    cpu::CpuRenderingBackend,
 };
 use fframes_skia_renderer::{
-    SkiaBackend, SkiaCacheConfig, SkiaCpuCtx, SkiaFFramesRenderer, SkiaPipelineConfig,
+    SkiaBackend, SkiaCacheConfig, SkiaFFramesRenderer, SkiaPipelineConfig,
 };
 
 fframes::include_media_dir!(struct BenchMedia, "render-bench/vs-remotion/media");
@@ -17,6 +18,11 @@ const PANELS: usize = 20;
 const PER_PANEL: usize = NODES / PANELS;
 const FRAMES: usize = 30;
 const WARMUP: usize = 3;
+const CPU: CpuRenderingBackend = CpuRenderingBackend {
+    cache_capacity: 20,
+    concurrency: 1,
+    text_cache_capacity: NODES,
+};
 const CACHE: SkiaCacheConfig = SkiaCacheConfig {
     text_capacity: NODES,
     geometry_capacity: NODES,
@@ -118,13 +124,22 @@ fn main() {
     let out = Path::new(&args[2]);
     std::fs::create_dir_all(out).expect("output directory");
     match args[1].as_str() {
-        "cpu" => run(&SkiaCpuCtx::new(SIDE, SIDE), "skia-cpu", out),
+        "cpu" => run(|| CPU, "cpu", out),
         "gpu" => match gpu_backend().and_then(|backend| {
             backend.create_skia_surface()?;
             Ok(backend)
         }) {
             Ok(backend) => run(
-                &backend,
+                || {
+                    SkiaFFramesRenderer::new(
+                        SkiaPipelineConfig {
+                            encoder_threads: 1,
+                            cache: CACHE,
+                            ..Default::default()
+                        },
+                        &backend,
+                    )
+                },
                 if cfg!(target_os = "macos") {
                     "skia-metal"
                 } else {
@@ -141,7 +156,7 @@ fn main() {
     }
 }
 
-fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
+fn run<B: FFramesRenderBackend>(pipeline: impl Fn() -> B, name: &str, out: &Path) {
     let video = Grid;
     let media = BenchMedia::prepare().expect("benchmark font");
     let hardware_encoding = name == "skia-metal";
@@ -178,16 +193,6 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
         },
         ..Default::default()
     };
-    let pipeline = || {
-        SkiaFFramesRenderer::new(
-            SkiaPipelineConfig {
-                encoder_threads: 1,
-                cache: CACHE,
-                ..Default::default()
-            },
-            backend,
-        )
-    };
     let warmup = out.join("warmup.mp4");
     fframes::render(&warmup, &video, pipeline(), &options).expect("warm-up MP4");
     let options = RenderOptions {
@@ -202,11 +207,16 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
     let ffmpeg =
         unsafe { std::ffi::CStr::from_ptr(fframes::ffmpeg_sys_fframes::av_version_info()) }
             .to_string_lossy();
+    let cache = if name == "cpu" {
+        serde_json::json!({"text_capacity": CPU.text_cache_capacity,
+            "layer_capacity": CPU.cache_capacity})
+    } else {
+        serde_json::json!({"text_capacity": CACHE.text_capacity,
+            "geometry_capacity": CACHE.geometry_capacity, "geometry_bytes": CACHE.geometry_bytes})
+    };
     println!(
         "{}",
-        serde_json::json!({"backend": name, "nodes": NODES,
-            "cache": {"text_capacity": CACHE.text_capacity,
-                "geometry_capacity": CACHE.geometry_capacity, "geometry_bytes": CACHE.geometry_bytes},
+        serde_json::json!({"backend": name, "nodes": NODES, "cache": cache,
             "export_ms": export_ms, "ffmpeg": ffmpeg,
             "encoder": encoder_name, "hardware_encoding": hardware_encoding})
     );

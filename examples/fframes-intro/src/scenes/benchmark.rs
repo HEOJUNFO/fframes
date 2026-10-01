@@ -141,7 +141,7 @@ fn result(l: f32) -> Svgr<'static> {
 fn table(l: f32) -> Svgr<'static> {
     let rows = [
         (BENCH_REMOTION_LABEL, BENCH_REMOTION_S, GREY),
-        ("FFRAMES · SKIA CPU", BENCH_FFRAMES_CPU_S, BONE),
+        ("FFRAMES · CPU", BENCH_FFRAMES_CPU_S, BONE),
         (BENCH_FFRAMES_LABEL, BENCH_FFRAMES_S, ORANGE),
     ];
     let items: Vec<Svgr> = rows

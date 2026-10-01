@@ -51,7 +51,7 @@ export function markdown(report) {
   const seconds = value =>
     value == null ? "incomplete" : `${(value / 1000).toFixed(3)} s`;
   return [
-    "# fframes + Skia vs Remotion",
+    "# fframes vs Remotion",
     "",
     "One 1000×1000 scene: 99,000 rectangles and 1,000 changing text digits in 20 panels with blur, glow and shadows. Remotion uses an unkeyed list with 12 dependent effect/state updates per element. Results describe this workload.",
     "",
@@ -59,7 +59,7 @@ export function markdown(report) {
     "",
     "| Renderer | Encoder | Complete MP4 export | Speedup vs Remotion |",
     "|---|---|---:|---:|",
-    `| fframes + Skia CPU | ${encoder("fframes")} | ${seconds(result.export_median_ms.cpu)} | ${result.speedup?.toFixed(2) ?? "n/a"}× |`,
+    `| fframes CPU (tiny-skia) | ${encoder("fframes")} | ${seconds(result.export_median_ms.cpu)} | ${result.speedup?.toFixed(2) ?? "n/a"}× |`,
     `| fframes + Skia GPU | ${encoder("fframes-gpu")} | ${result.gpu_status === "skipped" ? `skipped: ${result.gpu_skip_reason}` : seconds(result.export_median_ms.gpu)} | ${result.gpu_speedup?.toFixed(2) ?? "n/a"}× |`,
     `| Remotion | ${encoder("remotion")} | ${seconds(result.export_median_ms.remotion)} | — |`,
     "",
