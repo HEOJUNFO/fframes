@@ -221,6 +221,20 @@ fn hash_exact_group(
     Some(())
 }
 
+/// Every verb and point, for geometry without a compile-time identity.
+pub(super) fn exact_path_fingerprint(path: &tiny_skia_path::Path) -> u64 {
+    let mut h = FxHasher::default();
+    h.write_usize(path.verbs().len());
+    for verb in path.verbs() {
+        h.write_u8(*verb as u8);
+    }
+    for point in path.points() {
+        h.f32(point.x);
+        h.f32(point.y);
+    }
+    h.finish()
+}
+
 /// Fingerprint of the geometry a cached `skia_safe::Path` was converted from.
 pub(super) fn path_geometry_fingerprint(path: &tiny_skia_path::Path) -> u64 {
     let mut hasher = FxHasher::default();
