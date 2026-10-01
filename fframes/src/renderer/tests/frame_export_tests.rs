@@ -7,7 +7,9 @@ use crate::{
 use std::path::Path;
 
 fn random_rgba(width: usize, height: usize) -> Vec<u8> {
-    (0..width * height * 4).map(|_| rand::random()).collect()
+    (0..width * height * 4)
+        .map(|_| rand::random::<u8>())
+        .collect()
 }
 
 #[test]
