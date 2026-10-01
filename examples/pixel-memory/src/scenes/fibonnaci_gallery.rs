@@ -3,10 +3,7 @@ use crate::pixel_video_randomizer::RandomPhotos;
 use crate::{FramedImage, PixelVideo};
 use fframes::{Scene, Svgr, Transform, Video};
 use rand::Rng;
-use std::f32::consts::PI;
-
-/// The golden ratio (φ = (1 + √5) / 2)
-const PHI: f32 = 1.618_034;
+use std::f32::consts::{GOLDEN_RATIO as PHI, PI};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::atomic::AtomicBool;
 

@@ -1,18 +1,13 @@
-//! Reuse resolved resources without relying on compile-time static hashes.
-
-use std::collections::HashMap;
-
 use fframes::usvgr;
+use std::collections::HashMap;
 
 struct Entry<T> {
     value: T,
     bytes: usize,
 }
 
-/// Two generations with an estimated resource-byte budget per generation.
-/// Hashes locate candidates; callers check source equality before reuse.
-/// One-shot animated content
-/// can be drawn without retaining an unbounded collection of converted objects.
+/// Two generations, each bounded by entry count and estimated bytes.
+/// Callers must check source equality on cache hits.
 pub(super) struct ResourceCache<T, const BUDGET: usize> {
     current: HashMap<u64, Entry<T>>,
     previous: HashMap<u64, Entry<T>>,
@@ -111,7 +106,7 @@ pub(super) fn same_paint(a: &usvgr::Paint, b: &usvgr::Paint) -> bool {
             (a.cx(), a.cy(), a.r(), a.fx(), a.fy()) == (b.cx(), b.cy(), b.r(), b.fx(), b.fy())
                 && same_gradient(a, b)
         }
-        _ => false, // Pattern pictures may contain time-dependent media or shaders.
+        _ => false, // Patterns may change between frames.
     }
 }
 
