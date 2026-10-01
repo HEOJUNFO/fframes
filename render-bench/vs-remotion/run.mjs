@@ -143,7 +143,7 @@ if (args[0] === "--worker") {
     schema_version: 5,
     comparison: "Remotion renderFrames vs fframes Previewer + Skia",
     workload:
-      "99% rectangles, 1% changing DM Sans text digits; text painted last",
+      "20 animated panels: 99,000 overlapping 16–28px rectangles, 8px blurred saturated glows, 12px drop shadows, and 1,000 changing DM Sans text digits painted last",
     plan,
     environment: {
       platform: os.platform(),

@@ -11,6 +11,7 @@ mod convert;
 mod filters;
 mod fingerprint;
 mod image;
+mod rectangles;
 mod shader;
 
 pub use shader::compile_shader;
@@ -220,8 +221,27 @@ pub fn render_tree(tree: &usvgr::Tree, canvas: &Canvas, cache: &mut RenderCache)
 }
 
 fn render_nodes(parent: &usvgr::Group, canvas: &Canvas, cache: &mut RenderCache) {
-    for node in parent.children() {
-        render_node(node, canvas, cache);
+    let nodes = parent.children();
+    #[cfg(feature = "gpu")]
+    let batch = nodes.len() >= rectangles::MIN_RECTS && canvas.recording_context().is_some();
+    #[cfg(not(feature = "gpu"))]
+    let batch = false;
+    // Raster surfaces retain Skia's solid-fill path.
+    if !batch {
+        for node in nodes {
+            render_node(node, canvas, cache);
+        }
+        return;
+    }
+    let mut index = 0;
+    while index < nodes.len() {
+        let count = rectangles::draw_batch(&nodes[index..], canvas);
+        if count == 0 {
+            render_node(&nodes[index], canvas, cache);
+            index += 1;
+        } else {
+            index += count;
+        }
     }
 }
 

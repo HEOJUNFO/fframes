@@ -2,8 +2,8 @@
 use std::{hint::black_box, path::Path, time::Instant};
 
 use fframes::{
-    AudioMap, Duration, FFramesContext, Frame, Previewer, RenderOptions, StaticMediaProvider, Svgr,
-    Video,
+    AudioMap, Color, Duration, FFramesContext, Frame, Previewer, RenderOptions,
+    StaticMediaProvider, Svgr, Transform, Video,
 };
 use fframes_skia_renderer::{SkiaBackend, SkiaCpuCtx, SkiaFrameRenderer};
 
@@ -11,6 +11,8 @@ fframes::include_media_dir!(struct BenchMedia, "render-bench/vs-remotion/media")
 
 const SIDE: usize = 1000;
 const NODES: usize = 100_000;
+const PANELS: usize = 20;
+const PER_PANEL: usize = NODES / PANELS;
 const FRAMES: usize = 30;
 const WARMUP: usize = 3;
 
@@ -20,6 +22,7 @@ impl Video for Grid {
     const FPS: usize = 30;
     const WIDTH: usize = SIDE;
     const HEIGHT: usize = SIDE;
+    const BACKGROUND_COLOR: Color = Color::hex("#18202c");
     fn duration(&self) -> Duration<'_> {
         Duration::Frames(FRAMES + WARMUP)
     }
@@ -27,22 +30,43 @@ impl Video for Grid {
         AudioMap::none()
     }
     fn render_frame<'a>(&'a self, frame: Frame, _ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
-        let nodes: Vec<_> = (0..NODES).filter(|slot| slot % 100 != 0)
-            .chain((0..NODES).step_by(100)).map(|slot| {
-            let id = (slot + frame.index * 37) % NODES;
-            let r = (id * 13 + frame.index * 17) % 256;
-            let g = (id * 7 + frame.index * 29) % 256;
-            let b = (id * 3 + frame.index * 43) % 256;
-            let fill = format!("#{r:02x}{g:02x}{b:02x}");
-            if slot % 100 == 0 {
-                let index = slot / 100;
-                fframes::svgr!(<text x={(index % 100) * 10 + 1} y={(index / 100) * 10 + 7}
-                    font-family="DM Sans" font-size="10" fill={fill}>{((id + frame.index) % 10).to_string()}</text>)
-            } else {
-                fframes::svgr!(<rect x={slot % SIDE} y={slot / SIDE} width="1" height="1" fill={fill} />)
-            }
+        let panels: Vec<_> = (0..PANELS).map(|panel| {
+            let rectangles: Vec<_> = (panel * PER_PANEL..(panel + 1) * PER_PANEL)
+                .filter(|slot| slot % 100 != 0).map(|slot| {
+                    let id = (slot + frame.index * 37) % NODES;
+                    let fill = Color::rgba(
+                        ((id * 13 + frame.index * 17) % 256) as u8,
+                        ((id * 7 + frame.index * 29) % 256) as u8,
+                        ((id * 3 + frame.index * 43) % 256) as u8, 255);
+                    fframes::svgr!(<rect x={24 + (slot * 13 + frame.index * 3) % 128}
+                        y={24 + (slot * 17 + frame.index * 5) % 176}
+                        width={16 + id % 4 * 4} height={16 + id / 4 % 4 * 4} fill={fill} />)
+                }).collect();
+            let transform = Transform::translate((panel % 5 * 200) as f64, (panel / 5 * 250) as f64);
+            fframes::svgr!(<g transform={transform} filter="url(#panel-effects)">{rectangles}</g>)
         }).collect();
-        fframes::svgr!(<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000">{nodes}</svg>)
+        let texts: Vec<_> = (0..NODES).step_by(100).map(|slot| {
+            let panel = slot / PER_PANEL;
+            let index = slot % PER_PANEL / 100;
+            let id = (slot + frame.index * 37) % NODES;
+            fframes::svgr!(<text x={panel % 5 * 200 + 24 + index % 10 * 16}
+                y={panel / 5 * 250 + 40 + index / 10 * 40}
+                font-family="DM Sans" font-size="16" fill="#fff">{((id + frame.index) % 10).to_string()}</text>)
+        }).collect();
+        fframes::svgr!(
+            <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000">
+                <defs>
+                    <filter id="panel-effects" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="8" result="glow" />
+                        <feColorMatrix in="glow" type="saturate" values="1.8" result="bright" />
+                        <feMerge><feMergeNode in="bright" /><feMergeNode in="SourceGraphic" /></feMerge>
+                        <feDropShadow dx="4" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.7" />
+                    </filter>
+                </defs>
+                {panels}
+                {texts}
+            </svg>
+        )
     }
 }
 

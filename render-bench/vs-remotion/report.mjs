@@ -48,7 +48,7 @@ export function markdown(report) {
   return [
     "# fframes + Skia vs Remotion",
     "",
-    "100,000 elements: 99,000 rectangles and 1,000 changing text digits. Remotion uses an unkeyed list with 12 dependent effect/state updates per element. All render the same 1000×1000 scene serially, without a video encoder.",
+    "100,000 elements in 20 animated panels: 99,000 overlapping 16–28px rectangles with blurred glows, saturation and soft shadows, plus 1,000 changing text digits. Remotion uses an unkeyed list with 12 dependent effect/state updates per element. All render the same 1000×1000 scene serially, without a video encoder.",
     "",
     "Median of 3 rounds, each with 3 warm-up and 30 measured frames. PNG compression is included; startup, warm-up and disk writes are excluded.",
     "",

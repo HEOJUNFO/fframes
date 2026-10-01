@@ -8,6 +8,8 @@ import {
 } from "remotion";
 
 const nodes = 100000;
+const panels = 20;
+const perPanel = nodes / panels;
 
 const color = (id, frame) =>
   `rgb(${(id * 13 + frame * 17) % 256},${(id * 7 + frame * 29) % 256},${(id * 3 + frame * 43) % 256})`;
@@ -37,14 +39,15 @@ function EffectCell({ id, slot, frame, ready }) {
 }
 function cell(id, slot, frame) {
   if (slot % 100 === 0) {
-    const index = slot / 100;
+    const panel = Math.floor(slot / perPanel);
+    const index = (slot % perPanel) / 100;
     return (
       <text
-        x={(index % 100) * 10 + 1}
-        y={Math.floor(index / 100) * 10 + 7}
+        x={(panel % 5) * 200 + 24 + (index % 10) * 16}
+        y={Math.floor(panel / 5) * 250 + 40 + Math.floor(index / 10) * 40}
         fontFamily="DM Sans"
-        fontSize="10"
-        fill={color(id, frame)}
+        fontSize="16"
+        fill="#fff"
       >
         {(id + frame) % 10}
       </text>
@@ -52,10 +55,10 @@ function cell(id, slot, frame) {
   }
   return (
     <rect
-      x={slot % 1000}
-      y={Math.floor(slot / 1000)}
-      width="1"
-      height="1"
+      x={24 + ((slot * 13 + frame * 3) % 128)}
+      y={24 + ((slot * 17 + frame * 5) % 176)}
+      width={16 + (id % 4) * 4}
+      height={16 + (Math.floor(id / 4) % 4) * 4}
       fill={color(id, frame)}
     />
   );
@@ -86,21 +89,63 @@ function GridVideo() {
       if (doneFrame === frame && --remaining === 0) continueRender(handle);
     };
   }, [frame, delayRender, continueRender]);
-  const cells = [];
-  const append = slot => {
+  const cellFor = slot => {
     const id = (slot + frame * 37) % nodes;
-    cells.push(<EffectCell id={id} slot={slot} frame={frame} ready={ready} />);
+    return <EffectCell id={id} slot={slot} frame={frame} ready={ready} />;
   };
-  // Paint text over the rectangles.
-  for (let slot = 0; slot < nodes; slot++) if (slot % 100 !== 0) append(slot);
-  for (let slot = 0; slot < nodes; slot += 100) append(slot);
+  const layers = [];
+  for (let panel = 0; panel < panels; panel++) {
+    const cells = [];
+    for (let slot = panel * perPanel; slot < (panel + 1) * perPanel; slot++)
+      if (slot % 100 !== 0) cells.push(cellFor(slot));
+    layers.push(
+      <g
+        transform={`translate(${(panel % 5) * 200} ${Math.floor(panel / 5) * 250})`}
+        filter="url(#panel-effects)"
+      >
+        {cells}
+      </g>
+    );
+  }
+  const texts = [];
+  for (let slot = 0; slot < nodes; slot += 100) texts.push(cellFor(slot));
   return (
     <svg
       width="1000"
       height="1000"
-      style={{ display: "block", background: "#000" }}
+      style={{ display: "block", background: "#18202c" }}
     >
-      {cells}
+      <defs>
+        <filter
+          id="panel-effects"
+          x="-40%"
+          y="-40%"
+          width="180%"
+          height="180%"
+          colorInterpolationFilters="sRGB"
+        >
+          <feGaussianBlur stdDeviation="8" result="glow" />
+          <feColorMatrix
+            in="glow"
+            type="saturate"
+            values="1.8"
+            result="bright"
+          />
+          <feMerge>
+            <feMergeNode in="bright" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+          <feDropShadow
+            dx="4"
+            dy="8"
+            stdDeviation="12"
+            floodColor="#000"
+            floodOpacity="0.7"
+          />
+        </filter>
+      </defs>
+      {layers}
+      {texts}
     </svg>
   );
 }

@@ -7,7 +7,9 @@
 Requires Rust, Node.js and Chromium (`CHROME_PATH` or `--chrome PATH`).
 Results and frame PNGs go to `out/`; use `--out DIR` to choose a directory.
 
-One fixed scene: 99,000 rectangles and 1,000 changing text digits at 1000×1000.
+One fixed 1000×1000 scene: 20 animated panels containing 99,000 overlapping
+16–28px rectangles and 1,000 changing text digits. Each panel has a blurred
+glow, color saturation and a soft drop shadow; text is painted last.
 Both use DM Sans Regular from `examples/beta/media/DMSans-Regular.ttf`.
 Remotion uses an unkeyed list with 12 dependent effect/state updates per element.
 fframes computes the same content directly with Skia CPU and, when available,
@@ -21,12 +23,10 @@ and disk writes are excluded.
 The runner writes timings and versions to `results.json`, with a summary in
 `results.md`. Generated results and dependency lockfiles are ignored.
 
-Measured on Linux ARM64 Docker at `8af4abe`, with Remotion 4.0.529:
+Measured on Apple M5 Max, with Remotion 4.0.529:
 
-| Renderer           |     Median for 30 frames |
-| ------------------ | -----------------------: |
-| fframes + Skia CPU |                  3.877 s |
-| fframes + Skia GPU | Skipped: no hardware GPU |
-| Remotion           |                120.801 s |
-
-fframes + Skia CPU was **31.16×** faster for this workload.
+| Renderer                   | Median for 30 frames | Speedup vs Remotion |
+| -------------------------- | -------------------: | ------------------: |
+| fframes + Skia CPU         |              5.683 s |              16.86× |
+| fframes + Skia GPU (Metal) |              2.005 s |              47.80× |
+| Remotion                   |             95.843 s |                   — |

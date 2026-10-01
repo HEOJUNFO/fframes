@@ -141,6 +141,7 @@ fn result(l: f32) -> Svgr<'static> {
 fn table(l: f32) -> Svgr<'static> {
     let rows = [
         (BENCH_REMOTION_LABEL, BENCH_REMOTION_S, GREY),
+        ("FFRAMES · SKIA CPU", BENCH_FFRAMES_CPU_S, BONE),
         (BENCH_FFRAMES_LABEL, BENCH_FFRAMES_S, ORANGE),
     ];
     let items: Vec<Svgr> = rows
@@ -155,7 +156,7 @@ fn table(l: f32) -> Svgr<'static> {
                     <rect x="150" y={y - 70.0} width="1620" height="110" fill="#0f0e0d" fill-opacity="0.85" stroke="#2f2c29" stroke-width="1.5" />
                     <rect x="150" y={y - 70.0} width="6" height="110" fill={*color} />
                     <text x="190" y={y} font-family={DISPLAY} font-size="48" letter-spacing="-1" fill={BONE}>{*name}</text>
-                    <text x="1250" y={y} text-anchor="end" font-family={MONO} font-weight="600" font-size="48" fill={*color}>{format!("{secs:.3} s")}</text>
+                    <text x="1740" y={y} text-anchor="end" font-family={MONO} font-weight="600" font-size="48" fill={*color}>{format!("{secs:.3} s")}</text>
                 </g>
             )
         })
@@ -164,11 +165,11 @@ fn table(l: f32) -> Svgr<'static> {
     fframes::svgr!(
         <g opacity={1.0 - exit}>
             {Slam::new(150.0, 300.0, "THE NUMBERS", DISPLAY, 110.0, BONE).draw(l, 0.0, 120.0)}
-            {label(1250.0, 400.0, "WALL CLOCK".to_owned(), GREY, 18.0, "end")}
+            {label(1740.0, 400.0, "WALL CLOCK".to_owned(), GREY, 18.0, "end")}
             {items}
-            {label(154.0, 820.0, "VIDEO ENCODING NOT MEASURED".to_owned(), BONE, 18.0, "start")}
-            {label(154.0, 860.0, BENCH_NOTE.to_owned(), GREY, 18.0, "start")}
-            {label(154.0, 900.0, "REPRODUCE: RENDER-BENCH/VS-REMOTION IN THE FFRAMES REPO".to_owned(), ORANGE, 18.0, "start")}
+            {label(154.0, 860.0, "VIDEO ENCODING NOT MEASURED".to_owned(), BONE, 18.0, "start")}
+            {label(154.0, 900.0, BENCH_NOTE.to_owned(), GREY, 18.0, "start")}
+            {label(154.0, 940.0, "REPRODUCE: RENDER-BENCH/VS-REMOTION IN THE FFRAMES REPO".to_owned(), ORANGE, 18.0, "start")}
         </g>
     )
 }
