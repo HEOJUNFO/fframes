@@ -1,4 +1,5 @@
-use crate::SkiaBackend;
+use crate::frame_export::Rendered;
+use crate::{SkiaBackend, SkiaEncoderFrameRenderer, SkiaFrameExport};
 use fframes::get_thread_count;
 use fframes::{
     AudioTimelineSamples, FFramesContext, FrameClaim, FrameScheduler, RenderOptions,
@@ -64,6 +65,7 @@ pub(crate) struct Pipeline<'p, 'a, 'media, TVideo: Video + Sync + Send, TBackend
     pub(crate) logger: Arc<dyn FFramesLogger>,
     pub(crate) output: &'p Path,
     pub(crate) pipeline_config: SkiaPipelineConfig,
+    pub(crate) frame_export: SkiaFrameExport,
     pub(crate) skia: &'p TBackend,
     pub(crate) timeline: &'a ResolvedRenderingTimeline<'a, AudioTimelineSamples>,
     pub(crate) usvg_options: &'a usvgr::Options<'a>,
@@ -73,10 +75,11 @@ pub(crate) struct Pipeline<'p, 'a, 'media, TVideo: Video + Sync + Send, TBackend
 
 struct RenderedFrame {
     claim: FrameClaim,
-    pixels: Vec<u8>,
+    rendered: Rendered,
 }
 
-/// Recycled frame buffers, a 1080p frame is 8MB and allocating it every frame is not free.
+/// Recycled RGBA buffers for frames that are converted on the CPU, a 1080p frame is 8MB and
+/// allocating it every frame is not free.
 #[derive(Default)]
 struct BufferPool(Mutex<Vec<Vec<u8>>>);
 
@@ -98,10 +101,14 @@ impl BufferPool {
 /// Renders a video through three pools of threads connected by bounded queues:
 ///
 /// ```text
-/// generators (Video::render_frame + usvgr tree) ──► GPU contexts (draw + readback)
+/// generators (Video::render_frame + usvgr tree) ──► GPU contexts (draw + export)
 ///                                                        │
 ///       segment files ◄── SegmentWriter ◄── encoders ◄───┘
 /// ```
+///
+/// What leaves a GPU context depends on the negotiated encoder input (`crate::negotiate`):
+/// hardware frames the encoder reads on the GPU, YUV planes converted on the GPU, or RGBA
+/// the encoder threads convert.
 ///
 /// The [`FrameScheduler`] gives every generator a contiguous range of frames that is
 /// encoded as a separate segment, the segments are concatenated with the audio at the end.
@@ -113,6 +120,7 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
         logger,
         output,
         pipeline_config,
+        frame_export,
         skia,
         timeline,
         usvg_options,
@@ -161,6 +169,11 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
         render_options,
         &logger,
     );
+    let encoder_input = writer
+        .encoder_info()
+        .and_then(|encoder| crate::negotiate(skia, frame_export, &encoder))
+        .map_err(|err| FFramesRendererError::RenderChunkError(0, err))?;
+    let writer = writer.with_encoder_input(encoder_input);
 
     #[cfg(feature = "debug")]
     let metrics = crate::metrics::PipelineMetrics::new(generators, gpu_contexts, workers);
@@ -169,8 +182,11 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
     let buffers = BufferPool::default();
     let (tree_sender, tree_receiver) = mpsc::sync_channel::<(FrameClaim, usvgr::Tree)>(queue_size);
     let (frame_sender, frame_receiver) = mpsc::sync_channel::<RenderedFrame>(queue_size);
-    let tree_receiver = Mutex::new(tree_receiver);
-    let frame_receiver = Mutex::new(frame_receiver);
+    // Every stage owns its end of the queues, so a stage that stops (all of its threads
+    // failed or are done) closes them and the stages before and after it stop too instead
+    // of waiting on a queue nobody serves.
+    let tree_receiver = Arc::new(Mutex::new(tree_receiver));
+    let frame_receiver = Arc::new(Mutex::new(frame_receiver));
 
     let results = thread::scope(|scope| {
         let mark_failed = |result: FFramesRendererResult<()>| {
@@ -207,15 +223,17 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
 
         for _ in 0..gpu_contexts {
             let frame_sender = frame_sender.clone();
-            let (tree_receiver, buffers, failed, logger) =
-                (&tree_receiver, &buffers, &failed, &logger);
+            let tree_receiver = Arc::clone(&tree_receiver);
+            let (buffers, failed, logger, writer) = (&buffers, &failed, &logger, &writer);
             #[cfg(feature = "debug")]
             let metrics = metrics.renderer_metrics.clone();
             handles.push(scope.spawn(move || {
                 mark_failed(render_frames(
                     skia,
+                    frame_export,
+                    writer.encoder_input(),
                     logger,
-                    tree_receiver,
+                    &tree_receiver,
                     frame_sender,
                     buffers,
                     ctx,
@@ -227,15 +245,16 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
             }));
         }
         drop(frame_sender);
+        drop(tree_receiver);
 
         for _ in 0..scheduler.workers() {
-            let (frame_receiver, buffers, failed, writer) =
-                (&frame_receiver, &buffers, &failed, &writer);
+            let frame_receiver = Arc::clone(&frame_receiver);
+            let (buffers, failed, writer) = (&buffers, &failed, &writer);
             #[cfg(feature = "debug")]
             let metrics = metrics.encoder_metrics.clone();
             handles.push(scope.spawn(move || {
                 mark_failed(encode_frames(
-                    frame_receiver,
+                    &frame_receiver,
                     writer,
                     buffers,
                     failed,
@@ -244,6 +263,8 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
                 ))
             }));
         }
+
+        drop(frame_receiver);
 
         handles
             .into_iter()
@@ -357,6 +378,8 @@ fn receive<T>(receiver: &Mutex<Receiver<T>>) -> Option<T> {
 #[allow(clippy::too_many_arguments)]
 fn render_frames<TBackend: SkiaBackend>(
     backend: &TBackend,
+    frame_export: SkiaFrameExport,
+    encoder_input: &fframes::EncoderInput,
     logger: &Arc<dyn FFramesLogger>,
     tree_receiver: &Mutex<Receiver<(FrameClaim, usvgr::Tree)>>,
     frame_sender: SyncSender<RenderedFrame>,
@@ -366,20 +389,15 @@ fn render_frames<TBackend: SkiaBackend>(
     background_color: skia_safe::Color,
     #[cfg(feature = "debug")] metrics: Arc<crate::metrics::ThreadMetrics>,
 ) -> FFramesRendererResult<()> {
-    // Scaled renders (`scale_resolution`) need a surface of the output size, not the one the
-    // backend was created with.
-    let output_size = (
-        ctx.current_video_size.width as i32,
-        ctx.current_video_size.height as i32,
-    );
-    let (mut surface, mut gpu_context) =
-        crate::surface_with_size(backend, output_size.0, output_size.1)?;
-    let image_info = surface.image_info();
-    let frame_size = image_info.compute_byte_size(image_info.min_row_bytes());
-    let row_bytes = image_info.min_row_bytes();
-
-    // Persist across frames so static paths/images are converted only once
-    let mut render_cache = crate::render::RenderCache::new();
+    // Keeps the surfaces, the GPU context and the render cache (static paths and images are
+    // converted only once) across frames.
+    let mut renderer = SkiaEncoderFrameRenderer::new(
+        backend,
+        frame_export,
+        encoder_input,
+        ctx.current_video_size.width as u32,
+        ctx.current_video_size.height as u32,
+    )?;
 
     while let Some((claim, tree)) = {
         #[cfg(feature = "debug")]
@@ -404,35 +422,10 @@ fn render_frames<TBackend: SkiaBackend>(
         #[cfg(feature = "debug")]
         let start = Instant::now();
 
-        let mut pixels = buffers.take(frame_size);
-        let pixmap = skia_safe::Pixmap::new(&image_info, &mut pixels, row_bytes)
-            .ok_or_else(|| FFramesRendererError::Custom("Failed to create pixmap".to_string()))?;
-
-        let canvas = surface.canvas();
-        canvas.clear(background_color);
-        canvas.save();
-        crate::apply_fit(canvas, &tree, output_size.0, output_size.1);
-        crate::render::render_tree(&tree, canvas, &mut render_cache);
-        canvas.restore();
-
-        if let Some(gpu_context) = gpu_context.as_mut() {
-            gpu_context.flush_submit_and_sync_cpu();
-        }
-
-        let image = surface.image_snapshot();
-        if !image.read_pixels_to_pixmap_with_context(
-            gpu_context.as_mut(),
-            &pixmap,
-            (0, 0),
-            skia_safe::image::CachingHint::Allow,
-        ) {
-            return Err(FFramesRendererError::Custom(
-                "Failed to read pixels from Skia image".to_string(),
-            ));
-        }
+        let rendered = renderer.render(&tree, background_color, |size| buffers.take(size))?;
 
         // Video-frame images view the tree's pixel buffers without
-        // copying, so the tree has to outlive the flush and readback.
+        // copying, so the tree has to outlive the flush inside `render`.
         drop(tree);
         logger.log_frame(claim.frame, 0);
 
@@ -445,7 +438,7 @@ fn render_frames<TBackend: SkiaBackend>(
         }
 
         frame_sender
-            .send(RenderedFrame { claim, pixels })
+            .send(RenderedFrame { claim, rendered })
             .map_err(|_| FFramesRendererError::Custom("Renderer channel closed".to_string()))?;
     }
 
@@ -459,7 +452,7 @@ fn encode_frames(
     failed: &AtomicBool,
     #[cfg(feature = "debug")] metrics: Arc<crate::metrics::ThreadMetrics>,
 ) -> FFramesRendererResult<()> {
-    while let Some(RenderedFrame { claim, pixels }) = {
+    while let Some(RenderedFrame { claim, rendered }) = {
         #[cfg(feature = "debug")]
         let wait_start = Instant::now();
         let request = receive(frame_receiver);
@@ -476,10 +469,13 @@ fn encode_frames(
         #[cfg(feature = "debug")]
         let start = Instant::now();
 
-        let released = writer
-            .submit_owned(claim, pixels)
-            .map_err(|err| FFramesRendererError::RenderChunkError(claim.segment, err))?;
-        buffers.give_back(released);
+        match rendered {
+            Rendered::Frame(frame) => writer.submit_frame(claim, frame),
+            Rendered::Rgba(pixels) => writer
+                .submit_owned(claim, pixels)
+                .map(|released| buffers.give_back(released)),
+        }
+        .map_err(|err| FFramesRendererError::RenderChunkError(claim.segment, err))?;
 
         #[cfg(feature = "debug")]
         {

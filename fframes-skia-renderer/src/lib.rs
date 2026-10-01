@@ -15,6 +15,11 @@ pub use instant_rendering::*;
 mod frame_renderer;
 pub use frame_renderer::*;
 
+mod frame_export;
+pub use frame_export::{
+    FrameExportPath, HardwareFrameTarget, SkiaEncoderFrameRenderer, SkiaFrameExport, negotiate,
+};
+
 pub mod render;
 
 #[cfg(feature = "debug")]

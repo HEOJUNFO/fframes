@@ -1211,6 +1211,7 @@ name = "fframes_skia_renderer"
 version = "1.1.0"
 dependencies = [
  "ash",
+ "core-foundation 0.10.0",
  "fframes",
  "foreign-types-shared",
  "low-poly-art-example",

@@ -42,6 +42,8 @@ impl AvPacketAutoFree {
     }
 }
 
+unsafe impl Send for AvPacketAutoFree {}
+
 impl Drop for AvPacketAutoFree {
     fn drop(&mut self) {
         unsafe {

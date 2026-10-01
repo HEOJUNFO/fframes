@@ -4,13 +4,18 @@ use crate::backends::SkiaBackend;
 use crate::skia_pipeline;
 use crate::skia_pipeline::Pipeline;
 pub use crate::skia_pipeline::{SkiaPipelineConcurrencyPolicy, SkiaPipelineConfig};
+use crate::{SkiaEncoderFrameRenderer, SkiaFrameExport};
 use fframes::{AudioTimelineSamples, FrameRenderer, ResolvedRenderingTimeline, Video, usvgr};
-use fframes::{FFramesRenderBackend, FFramesRendererResult};
+use fframes::{
+    EncoderFrameRenderer, EncoderInput, FFramesRenderBackend, FFramesRendererResult,
+    RenderEncodingResult, VideoEncoderInfo,
+};
 
 #[derive(Clone)]
 pub struct SkiaFFramesRenderer<'a, T: SkiaBackend + Sync + Send> {
     pub(crate) pipeline_config: SkiaPipelineConfig,
     pub(crate) backend: &'a T,
+    pub(crate) frame_export: SkiaFrameExport,
 }
 
 impl<'a, TSkiaBackend: SkiaBackend> SkiaFFramesRenderer<'a, TSkiaBackend> {
@@ -25,7 +30,15 @@ impl<'a, TSkiaBackend: SkiaBackend> SkiaFFramesRenderer<'a, TSkiaBackend> {
         Self {
             pipeline_config,
             backend: skia_backend_context,
+            frame_export: SkiaFrameExport::default(),
         }
+    }
+
+    /// How rendered frames are handed to the video encoder. By default the fastest way the
+    /// backend and the encoder support is used, see [`SkiaFrameExport`].
+    pub fn frame_export(mut self, frame_export: SkiaFrameExport) -> Self {
+        self.frame_export = frame_export;
+        self
     }
 }
 
@@ -33,6 +46,28 @@ impl<TBackend: SkiaBackend> FFramesRenderBackend for SkiaFFramesRenderer<'_, TBa
     /// Skia previews on the same GPU context: shaders and filters look like in the video.
     fn frame_renderer(&self) -> Option<Box<dyn FrameRenderer + '_>> {
         Some(Box::new(crate::SkiaFrameRenderer::new(self.backend)))
+    }
+
+    fn negotiate_encoder_input(
+        &self,
+        encoder: &VideoEncoderInfo<'_>,
+    ) -> RenderEncodingResult<EncoderInput> {
+        crate::negotiate(self.backend, self.frame_export, encoder)
+    }
+
+    fn encoder_frame_renderer(
+        &self,
+        input: &EncoderInput,
+        width: u32,
+        height: u32,
+    ) -> FFramesRendererResult<Box<dyn EncoderFrameRenderer + '_>> {
+        Ok(Box::new(SkiaEncoderFrameRenderer::new(
+            self.backend,
+            self.frame_export,
+            input,
+            width,
+            height,
+        )?))
     }
 
     fn render_frame<'a, 'media: 'a, TVideo: Video + Sync + Sized>(
@@ -88,6 +123,7 @@ impl<TBackend: SkiaBackend> FFramesRenderBackend for SkiaFFramesRenderer<'_, TBa
             logger,
             output: output.as_ref(),
             pipeline_config: self.pipeline_config,
+            frame_export: self.frame_export,
             render_options,
             skia: self.backend,
             timeline,

@@ -1,6 +1,18 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+/// The RGB to `YCbCr` conversion every encoder input goes through (BT.601, limited range),
+/// as weights for channel values in `0.0..=1.0`: `[r, g, b, offset]` for Y, Cb and Cr.
+///
+/// These are the coefficients of the integer converter below. Backends that convert on the
+/// GPU use them too, so the streams (tagged as BT.601 limited by the encoder) look the same
+/// whichever way a frame took.
+pub const RGB_TO_YUV: [[f32; 4]; 3] = [
+    [66. / 256., 129. / 256., 25. / 256., 16. / 255.],
+    [-38. / 256., -74. / 256., 112. / 256., 128. / 255.],
+    [112. / 256., -94. / 256., -18. / 256., 128. / 255.],
+];
+
 #[inline(always)]
 pub fn get_rgb(pixmap: &[u8], i: usize) -> (i32, i32, i32) {
     let r = i32::from(pixmap[4 * i]);
@@ -29,11 +41,27 @@ pub fn fill_yuv420_from_rgba_pixmap_base(
         // an important note that linesize here can be different from the width of an image so it is required to fill the buffer correctly.
         let width = width as usize;
         let height = height as usize;
-        let frame_size = height * (y_linesize as usize) + width;
+        if width == 0 || height == 0 {
+            return;
+        }
 
-        let y_pixels = std::slice::from_raw_parts_mut(y_pixels_destination, frame_size);
-        let cb_pixels = std::slice::from_raw_parts_mut(cb_pixels_destination, frame_size / 2);
-        let cr_pixels = std::slice::from_raw_parts_mut(cr_pixels_destination, frame_size / 2);
+        // the last line of a plane ends with its last pixel, not with the line padding
+        let plane_len =
+            |linesize: i32, columns: usize, rows: usize| (rows - 1) * linesize as usize + columns;
+        let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+
+        let y_pixels = std::slice::from_raw_parts_mut(
+            y_pixels_destination,
+            plane_len(y_linesize, width, height),
+        );
+        let cb_pixels = std::slice::from_raw_parts_mut(
+            cb_pixels_destination,
+            plane_len(cb_linesize, chroma_width, chroma_height),
+        );
+        let cr_pixels = std::slice::from_raw_parts_mut(
+            cr_pixels_destination,
+            plane_len(cr_linesize, chroma_width, chroma_height),
+        );
 
         for y in 0..height {
             for x in 0..width {

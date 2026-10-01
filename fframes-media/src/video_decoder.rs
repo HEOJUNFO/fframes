@@ -704,6 +704,12 @@ impl FFmpegDecoder {
 
                 av_frame_copy_props(self.frame_buf.latest_av_frame, self.hw_frame);
             }
+            // The decoder fell back to software decoding: the frame it returned already
+            // holds the pixels.
+            _ if target_frame != self.frame_buf.latest_av_frame => {
+                av_frame_unref(self.frame_buf.latest_av_frame);
+                av_frame_move_ref(self.frame_buf.latest_av_frame, target_frame);
+            }
             _ => (),
         }
 
@@ -892,7 +898,18 @@ unsafe extern "C" fn get_hw_format(
             p = p.add(1);
         }
 
+        // The device has no decoder for this stream (a driver without the codec, an
+        // unsupported profile). The formats that are left decode in software.
         eprintln!("Failed to get HW surface format, falling back to software decoding");
+        let mut p = pix_fmts;
+        while !p.is_null() && *p != AVPixelFormat::AV_PIX_FMT_NONE {
+            let desc = av_pix_fmt_desc_get(*p);
+            if !desc.is_null() && (*desc).flags & AV_PIX_FMT_FLAG_HWACCEL as u64 == 0 {
+                return *p;
+            }
+            p = p.add(1);
+        }
+
         AVPixelFormat::AV_PIX_FMT_NONE
     }
 }

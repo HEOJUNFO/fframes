@@ -617,6 +617,23 @@ Global flags: `--json` (one JSON document on stdout, JSON progress events on std
   (`features = ["vulkan"]`; `new_metal` with `metal`). The Skia backend walks the `svgr!` tree
   directly and caches static subtrees as pictures; it is roughly 10x faster than the CPU
   backend on 1080p (see `cargo run --release -p fframes_skia_renderer --features vulkan --example svgr_vs_skia`).
+- The Skia backend hands frames to the encoder the fastest way both support
+  (`SkiaFFramesRenderer::frame_export(SkiaFrameExport::Auto)`, the default):
+  1. hardware frames, the encoder reads the texture Skia drew and nothing is read back:
+     `h264_videotoolbox`/`hevc_videotoolbox` with `new_metal`, and `h264_vulkan`/`hevc_vulkan`
+     with `SkiaVulkanCtx::new_shared_with_encoder(W, H)` and
+     `fframes_skia_renderer = { features = ["vulkan-video"] }` (the driver needs Vulkan Video
+     encode). Only when the requested `pixel_format` is `yuv420p` (the default) or `nv12`;
+  2. conversion on the GPU for `yuv420p`, `nv12`, `nv21`, `yuva420p`, `yuv422p` and `yuv444p`: only
+     the converted planes are read back;
+  3. RGBA readback and conversion on the CPU for every other pixel format
+     (`SkiaFrameExport::CpuConversion` forces it). The CPU backend always converts this way.
+
+  `cargo run --release -p fframes_skia_renderer --features vulkan --example frame_export -- --encoder libx264`
+  measures the three on your machine. A backend of your own implements
+  `FFramesRenderBackend::negotiate_encoder_input` (a software format or
+  `EncoderInput::hardware_frames`) and `encoder_frame_renderer`, which returns libav frames
+  (`fframes::VideoFrame`) for `SegmentWriter::submit_frame`.
 - macOS: request `hevc_videotoolbox` only with `fframes = { features = ["videotoolbox"] }`
   (see `examples/teej-podcast/Cargo.toml`), otherwise the encoder silently falls back.
 - In code: `fframes::Previewer::new(&video, &options)` keeps fonts, images and caches between

@@ -1,3 +1,7 @@
+use super::frame_export::{
+    EncoderFrameRenderer, EncoderInput, RgbaEncoderFrameRenderer, VideoEncoderInfo,
+};
+use super::renderer_error::{FFramesRendererError, RenderEncodingResult};
 use super::{fframes_logger::FFramesLogger, renderer_error::FFramesRendererResult};
 use crate::{AudioTimelineSamples, RenderOptions, ResolvedRenderingTimeline, Video, usvgr};
 use std::{path::Path, sync::Arc};
@@ -10,6 +14,43 @@ pub trait FFramesRenderBackend {
     /// `None` uses the built-in CPU renderer.
     fn frame_renderer(&self) -> Option<Box<dyn super::FrameRenderer + '_>> {
         None
+    }
+
+    /// Picks what the video encoders of a render are opened with, before any of them
+    /// exists. A backend that can produce the encoder's frames natively answers with the
+    /// format it delivers: another software format it converts to on the GPU, or
+    /// hardware frames ([`EncoderInput::hardware_frames`]) the encoder reads without the
+    /// pixels ever being copied into memory.
+    ///
+    /// The default keeps the pixel format requested in `EncoderOptions`.
+    fn negotiate_encoder_input(
+        &self,
+        encoder: &VideoEncoderInfo<'_>,
+    ) -> RenderEncodingResult<EncoderInput> {
+        EncoderInput::requested(encoder)
+    }
+
+    /// Rasterizes frames into what the encoder takes (`input` is the outcome of
+    /// [`Self::negotiate_encoder_input`]), one renderer per rendering thread.
+    ///
+    /// The default renders RGBA with [`Self::frame_renderer`] and converts it on the CPU.
+    fn encoder_frame_renderer(
+        &self,
+        input: &EncoderInput,
+        width: u32,
+        height: u32,
+    ) -> FFramesRendererResult<Box<dyn EncoderFrameRenderer + '_>> {
+        let renderer = self.frame_renderer().ok_or_else(|| {
+            FFramesRendererError::Custom(
+                "the rendering backend has no frame renderer to produce encoder frames with"
+                    .to_owned(),
+            )
+        })?;
+
+        Ok(Box::new(
+            RgbaEncoderFrameRenderer::new(renderer, input, width, height)
+                .map_err(|err| FFramesRendererError::from_chunk(0, err))?,
+        ))
     }
 
     fn render_frame<'a, 'media: 'a, TVideo: Video + Sync + Sized + Send>(

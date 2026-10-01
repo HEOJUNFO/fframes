@@ -1,5 +1,6 @@
 use super::{
     FFramesLogger,
+    frame_export::{EncoderInput, VideoFrame},
     renderer_error::{self, RenderEncodingError},
     stream,
     stream::Stream,
@@ -285,6 +286,33 @@ impl Encoder {
         logger: &Arc<dyn FFramesLogger>,
     ) -> RenderEncodingResult<Self> {
         unsafe {
+            Self::new_with_input(
+                output,
+                width,
+                height,
+                fps,
+                filename,
+                render_options,
+                &EncoderInput::software(render_options.video_encoder_options.pixel_format),
+                logger,
+            )
+        }
+    }
+
+    /// Like [`Self::new`] with the video encoder opened for the frames a rendering backend
+    /// negotiated (`FFramesRenderBackend::negotiate_encoder_input`).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new_with_input(
+        output: EncoderOutput,
+        width: i32,
+        height: i32,
+        fps: i32,
+        filename: &Path,
+        render_options: &RenderOptions,
+        input: &EncoderInput,
+        logger: &Arc<dyn FFramesLogger>,
+    ) -> RenderEncodingResult<Self> {
+        unsafe {
             av_log_set_level(logger.get_libav_log_level());
 
             let c_filename = CString::new(filename.to_string_lossy().as_ref())
@@ -307,6 +335,7 @@ impl Encoder {
                 fps,
                 oc,
                 &render_options.video_encoder_options,
+                input,
                 // Segments already encode in parallel. Letting each encoder auto-size
                 // its own thread pool multiplies both threads and buffered frames.
                 i32::from(matches!(output, EncoderOutput::IntermediateChunk)),
@@ -364,21 +393,29 @@ impl Encoder {
         }: &EncoderFrame,
         customize_frame: F,
     ) -> RenderEncodingResult<()> {
+        unsafe { Self::send_raw_frame(stream, *frame, *packet, customize_frame) }
+    }
+
+    unsafe fn send_raw_frame<F: Fn(*mut AVPacket) -> i32>(
+        stream: &stream::Stream,
+        frame: *mut AVFrame,
+        packet: *mut AVPacket,
+        customize_frame: F,
+    ) -> RenderEncodingResult<()> {
         unsafe {
-            let avcodec_send_frame = avcodec_send_frame(stream.enc, *frame);
-            let mut status = avcodec_send_frame;
+            let mut status = avcodec_send_frame(stream.enc, frame);
 
             if status < 0 {
                 let error_description = av_error_to_string(status);
 
                 return Err(renderer_error::RenderEncodingError::CantEncodeFrame {
                     error: error_description,
-                    pts: Some((*(*frame)).pts),
+                    pts: Some((*frame).pts),
                 });
             }
 
             while status >= 0 {
-                status = avcodec_receive_packet(stream.enc, *packet);
+                status = avcodec_receive_packet(stream.enc, packet);
 
                 if status == AVERROR_EOF || status == FFMPEG_AVERROR(EAGAIN) {
                     break;
@@ -388,11 +425,11 @@ impl Encoder {
                     let error_description = av_error_to_string(status);
                     return Err(renderer_error::RenderEncodingError::CantEncodeFrame {
                         error: format!("avcodec_receive_packet failed: {error_description}"),
-                        pts: Some((*(*frame)).pts),
+                        pts: Some((*frame).pts),
                     });
                 }
 
-                let write_status = customize_frame(*packet);
+                let write_status = customize_frame(packet);
                 if write_status < 0 {
                     let error_description = av_error_to_string(write_status);
                     return Err(renderer_error::RenderEncodingError::CantWriteFrame(
@@ -415,6 +452,28 @@ impl Encoder {
             let oc = self.oc;
 
             self.send_customizable_frame_packet(stream, frame, |packet| {
+                av_packet_rescale_ts(packet, (*stream.enc).time_base, (*stream.st).time_base);
+
+                (*packet).stream_index = (*stream.st).index;
+                av_interleaved_write_frame(oc, packet)
+            })
+        }
+    }
+
+    /// Encodes a frame of the video stream with `pts` in frames and writes the packets
+    /// that are ready into the file. `packet` is scratch space that is reused between calls.
+    pub unsafe fn send_video_frame(
+        &self,
+        frame: &VideoFrame,
+        pts: i64,
+        packet: *mut AVPacket,
+    ) -> RenderEncodingResult<()> {
+        unsafe {
+            let stream = &self.video_stream;
+            let oc = self.oc;
+            (*frame.as_ptr()).pts = pts;
+
+            Self::send_raw_frame(stream, frame.as_ptr(), packet, |packet| {
                 av_packet_rescale_ts(packet, (*stream.enc).time_base, (*stream.st).time_base);
 
                 (*packet).stream_index = (*stream.st).index;
