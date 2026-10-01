@@ -415,6 +415,11 @@ impl Encoder {
             let oc = self.oc;
 
             self.send_customizable_frame_packet(stream, frame, |packet| {
+                // Encoders may omit duration; video frames use a 1/fps time base.
+                if matches!(stream.variant, stream::StreamVariant::Video) && (*packet).duration == 0
+                {
+                    (*packet).duration = 1;
+                }
                 av_packet_rescale_ts(packet, (*stream.enc).time_base, (*stream.st).time_base);
 
                 (*packet).stream_index = (*stream.st).index;
@@ -452,6 +457,11 @@ impl Encoder {
                     });
                 }
 
+                // Encoders may omit duration; video frames use a 1/fps time base.
+                if matches!(stream.variant, stream::StreamVariant::Video) && (*packet).duration == 0
+                {
+                    (*packet).duration = 1;
+                }
                 av_packet_rescale_ts(packet, (*stream.enc).time_base, (*stream.st).time_base);
                 (*packet).stream_index = (*stream.st).index;
                 let status = av_interleaved_write_frame(self.oc, packet);
@@ -485,6 +495,79 @@ unsafe impl Sync for Encoder {}
 mod tests {
     use super::*;
     use crate::{FFramesLoggerVariant, renderer::fframes_logger::make_logger};
+
+    #[test]
+    fn mp4_preserves_final_frame_duration() {
+        let directory =
+            std::env::temp_dir().join(format!("fframes-duration-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("out.mp4");
+        let logger = make_logger(FFramesLoggerVariant::Silent);
+        let options = RenderOptions {
+            video_encoder_options: EncoderOptions {
+                preferred_encoder: Some("libx264"),
+                codec_params: Some(&[("preset", "medium"), ("threads", "1")]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        unsafe {
+            {
+                let encoder = Encoder::new(
+                    EncoderOutput::Final { with_audio: false },
+                    64,
+                    64,
+                    30,
+                    &path,
+                    &options,
+                    &logger,
+                )
+                .unwrap_or_else(|err| panic!("test encoder: {err}"));
+                let mut frame = EncoderFrame::new(&encoder.video_stream)
+                    .unwrap_or_else(|err| panic!("test frame: {err}"));
+                for pts in 0..4 {
+                    frame.fill_from_rgba_pixmap(&[128; 64 * 64 * 4]);
+                    frame.set_pts(pts);
+                    encoder
+                        .send_frame(&encoder.video_stream, &frame)
+                        .unwrap_or_else(|err| panic!("test encode: {err}"));
+                }
+                encoder
+                    .flush_stream(&encoder.video_stream)
+                    .unwrap_or_else(|err| panic!("test drain: {err}"));
+            }
+            let filename = CString::new(path.to_str().unwrap()).unwrap();
+            let mut input = std::ptr::null_mut();
+            assert_eq!(
+                avformat_open_input(
+                    &raw mut input,
+                    filename.as_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            assert!(avformat_find_stream_info(input, std::ptr::null_mut()) >= 0);
+            let stream = *(*input).streams;
+            let frames = av_rescale_q(
+                (*stream).duration,
+                (*stream).time_base,
+                AVRational { num: 1, den: 30 },
+            );
+            let mut packet = av_packet_alloc();
+            let mut count = 0;
+            while av_read_frame(input, packet) >= 0 {
+                assert_eq!((*packet).flags & AV_PKT_FLAG_DISCARD, 0);
+                count += 1;
+                av_packet_unref(packet);
+            }
+            av_packet_free(&raw mut packet);
+            avformat_close_input(&raw mut input);
+            assert_eq!(count, 4);
+            assert_eq!(frames, 4);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn parallel_segments_limit_codec_threads_and_allow_overrides() {
