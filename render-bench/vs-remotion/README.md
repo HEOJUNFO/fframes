@@ -15,6 +15,8 @@ Remotion uses an unkeyed list with 12 dependent effect/state updates per element
 fframes computes the same content directly with Skia CPU and, when available,
 Skia GPU (Metal on macOS, Vulkan elsewhere). GPU is skipped without a hardware device.
 Results apply to this React workload with many effects.
+Both Skia backends use 100,000-entry SVG text and geometry caches, with a
+51.2 MB geometry budget per generation. Limits come from `SkiaCacheConfig`.
 
 All use one rendering pipeline. Render-to-PNG times are medians of three 30-frame
 runs after three warm-up frames. PNG compression is included; video encoding,
@@ -23,7 +25,7 @@ startup, warm-up and disk writes are excluded.
 The runner writes timings and versions to `results.json`, with a summary in
 `results.md`. Generated results and dependency lockfiles are ignored.
 
-Apple M5 Max medians, Remotion 4.0.529:
+Apple M5 Max medians with the previous default cache limits, Remotion 4.0.529:
 
 | Renderer                   | Render-to-PNG, 30 frames | Speedup vs Remotion |
 | -------------------------- | -----------------------: | ------------------: |

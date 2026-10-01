@@ -1,4 +1,4 @@
-use crate::SkiaBackend;
+use crate::{SkiaBackend, SkiaCacheConfig};
 use fframes::get_thread_count;
 use fframes::{
     AudioTimelineSamples, FFramesContext, FrameClaim, FrameScheduler, RenderOptions,
@@ -34,6 +34,8 @@ pub struct SkiaPipelineConfig {
     /// The number of threads that build frame trees and encode the rendered frames.
     pub encoder_threads: usize,
     pub concurrency_policy: SkiaPipelineConcurrencyPolicy,
+    /// Per-worker SVG text and Skia geometry cache limits.
+    pub cache: SkiaCacheConfig,
 }
 
 impl Default for SkiaPipelineConfig {
@@ -42,6 +44,7 @@ impl Default for SkiaPipelineConfig {
             buffer_queue_size: 10,
             encoder_threads: get_thread_count(),
             concurrency_policy: SkiaPipelineConcurrencyPolicy::OnePipeline,
+            cache: SkiaCacheConfig::default(),
         }
     }
 }
@@ -196,6 +199,7 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
                     font_db,
                     tree_sender,
                     queue_size,
+                    pipeline_config.cache.text_capacity,
                     ctx,
                     failed,
                     #[cfg(feature = "debug")]
@@ -221,6 +225,7 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
                     ctx,
                     failed,
                     background_color,
+                    pipeline_config.cache,
                     #[cfg(feature = "debug")]
                     metrics,
                 ))
@@ -295,12 +300,13 @@ fn generate_frames<'a, 'media: 'a, TVideo: Video + Sync + Send>(
     font_db: &'a usvgr::fontdb::Database,
     tree_sender: SyncSender<(FrameClaim, usvgr::Tree)>,
     queue_size: usize,
+    text_cache_capacity: usize,
     ctx: &'a FFramesContext<'a, 'media>,
     failed: &AtomicBool,
     #[cfg(feature = "debug")] metrics: Arc<crate::metrics::ThreadMetrics>,
 ) -> FFramesRendererResult<()> {
     let break_lines_cache = TextCache::new(10);
-    let mut converter_cache = usvgr::Cache::new_with_text_cache(10);
+    let mut converter_cache = usvgr::Cache::new_with_text_cache(text_cache_capacity);
     // x2 because sometimes we might need to decode 2 frames at once
     let video_decoders_worker = VideoDecodersWorker::new(queue_size * 2);
 
@@ -364,6 +370,7 @@ fn render_frames<TBackend: SkiaBackend>(
     ctx: &FFramesContext,
     failed: &AtomicBool,
     background_color: skia_safe::Color,
+    cache_config: SkiaCacheConfig,
     #[cfg(feature = "debug")] metrics: Arc<crate::metrics::ThreadMetrics>,
 ) -> FFramesRendererResult<()> {
     // Scaled renders (`scale_resolution`) need a surface of the output size, not the one the
@@ -379,7 +386,7 @@ fn render_frames<TBackend: SkiaBackend>(
     let row_bytes = image_info.min_row_bytes();
 
     // Persist across frames so static paths/images are converted only once
-    let mut render_cache = crate::render::RenderCache::new();
+    let mut render_cache = crate::render::RenderCache::with_config(cache_config);
 
     while let Some((claim, tree)) = {
         #[cfg(feature = "debug")]

@@ -67,6 +67,12 @@ impl RgbaFrame {
 /// Rasterizes converted frames. Implementations keep their surfaces and caches between
 /// calls, so rendering many frames through one renderer is cheap.
 pub trait FrameRenderer {
+    /// SVG text cache capacity requested by this renderer. `None` keeps the
+    /// previewer's current setting; zero disables SVG text layout caching.
+    fn svg_text_cache_capacity(&self) -> Option<usize> {
+        None
+    }
+
     /// Renders `tree` scaled to `width`x`height` over `background`.
     fn render_tree(
         &mut self,
@@ -250,6 +256,7 @@ pub struct Previewer<'a, 'media, TVideo: Video> {
     size: VideoSize,
     timeline_index: TimelineIndex,
     converter_cache: usvgr::Cache,
+    converter_text_cache_capacity: usize,
     text_cache: Option<TextCache>,
     decoders: VideoDecodersWorker,
 }
@@ -293,6 +300,7 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
             image_source,
             timeline_index,
             converter_cache: usvgr::Cache::new_with_text_cache(10),
+            converter_text_cache_capacity: 10,
             text_cache: TextCache::new(10),
             decoders: VideoDecodersWorker::new(2),
         })
@@ -437,9 +445,19 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
         frame: usize,
         renderer: &mut dyn FrameRenderer,
     ) -> FFramesRendererResult<RgbaFrame> {
+        self.configure_renderer_cache(renderer);
         let tree = self.svg_tree(frame)?;
         let (width, height) = self.size();
         renderer.render_tree(&tree, TVideo::BACKGROUND_COLOR, width, height)
+    }
+
+    fn configure_renderer_cache(&mut self, renderer: &dyn FrameRenderer) {
+        if let Some(capacity) = renderer.svg_text_cache_capacity()
+            && capacity != self.converter_text_cache_capacity
+        {
+            self.converter_cache = usvgr::Cache::new_with_text_cache(capacity);
+            self.converter_text_cache_capacity = capacity;
+        }
     }
 
     /// Renders a frame and reports the problems found while converting it.
@@ -449,6 +467,7 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
         renderer: &mut dyn FrameRenderer,
     ) -> FFramesRendererResult<(RgbaFrame, FrameReport)> {
         self.check_frame(frame)?;
+        self.configure_renderer_cache(renderer);
         let (width, height) = self.size();
         let (tree, mut found) = diagnostics::collect(|| self.svg_tree(frame));
         let tree = tree?;
@@ -493,5 +512,66 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
         }
 
         Ok(self.report(frame, found))
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use crate::{AudioMap, Duration, Svgr};
+
+    struct EmptyVideo;
+    impl Video for EmptyVideo {
+        const FPS: usize = 30;
+        const WIDTH: usize = 1;
+        const HEIGHT: usize = 1;
+        fn duration(&self) -> Duration<'_> {
+            Duration::Frames(2)
+        }
+        fn audio(&self) -> AudioMap<'_> {
+            AudioMap::none()
+        }
+        fn render_frame<'a>(&'a self, _: Frame, _: &FFramesContext<'a, '_>) -> Svgr<'a> {
+            Svgr::empty()
+        }
+    }
+
+    struct Renderer(Option<usize>);
+    impl FrameRenderer for Renderer {
+        fn svg_text_cache_capacity(&self) -> Option<usize> {
+            self.0
+        }
+        fn render_tree(
+            &mut self,
+            _: &usvgr::Tree,
+            _: Color,
+            width: u32,
+            height: u32,
+        ) -> FFramesRendererResult<RgbaFrame> {
+            Ok(RgbaFrame {
+                width,
+                height,
+                pixels: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn renderer_text_capacity_is_applied_without_recreating_warm_cache() {
+        let mut preview = Previewer::new(&EmptyVideo, &RenderOptions::default()).unwrap();
+        preview.configure_renderer_cache(&Renderer(Some(100_000)));
+        assert_eq!(preview.converter_text_cache_capacity, 100_000);
+        // A value carried by the converter must survive another frame's configuration.
+        preview.converter_cache.paint.insert(
+            "warm".into(),
+            usvgr::Paint::Color(usvgr::Color::new_rgb(1, 2, 3)),
+        );
+        preview.configure_renderer_cache(&Renderer(Some(100_000)));
+        assert!(preview.converter_cache.paint.contains_key("warm"));
+        preview.configure_renderer_cache(&Renderer(None));
+        assert_eq!(preview.converter_text_cache_capacity, 100_000);
+        preview.configure_renderer_cache(&Renderer(Some(0)));
+        assert_eq!(preview.converter_text_cache_capacity, 0);
+        assert!(preview.converter_cache.usvgr_text_cache.is_none());
     }
 }

@@ -170,6 +170,17 @@ impl RenderCache {
         Self::default()
     }
 
+    /// Creates a cache with explicit dynamic geometry entry and memory limits.
+    pub fn with_config(config: crate::SkiaCacheConfig) -> Self {
+        Self {
+            geometry: resources::ResourceCache::with_limits(
+                config.geometry_capacity,
+                config.geometry_bytes,
+            ),
+            ..Default::default()
+        }
+    }
+
     fn begin_frame(&mut self) {
         self.paths.begin_frame();
         self.geometry.begin_frame();

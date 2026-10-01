@@ -7,7 +7,8 @@ use fframes::{
     Svgr, Transform, Video,
 };
 use fframes_skia_renderer::{
-    SkiaBackend, SkiaCpuCtx, SkiaFFramesRenderer, SkiaFrameRenderer, SkiaPipelineConfig,
+    SkiaBackend, SkiaCacheConfig, SkiaCpuCtx, SkiaFFramesRenderer, SkiaFrameRenderer,
+    SkiaPipelineConfig,
 };
 
 fframes::include_media_dir!(struct BenchMedia, "render-bench/vs-remotion/media");
@@ -18,6 +19,11 @@ const PANELS: usize = 20;
 const PER_PANEL: usize = NODES / PANELS;
 const FRAMES: usize = 30;
 const WARMUP: usize = 3;
+const CACHE: SkiaCacheConfig = SkiaCacheConfig {
+    text_capacity: NODES,
+    geometry_capacity: NODES,
+    geometry_bytes: NODES * 512,
+};
 
 struct Grid;
 
@@ -146,7 +152,7 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
         ..Default::default()
     };
     let mut preview = Previewer::new(&video, &options).expect("preview initialization");
-    let mut renderer = SkiaFrameRenderer::new(backend);
+    let mut renderer = SkiaFrameRenderer::new(backend).with_cache_config(CACHE);
     let mut samples = Vec::new();
     let mut pixels = Vec::new();
     for frame in 0..FRAMES + WARMUP {
@@ -245,6 +251,7 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
     let pipeline = SkiaFFramesRenderer::new(
         SkiaPipelineConfig {
             encoder_threads: 1,
+            cache: CACHE,
             ..Default::default()
         },
         backend,
@@ -259,6 +266,8 @@ fn run(backend: &impl SkiaBackend, name: &str, out: &Path) {
     println!(
         "{}",
         serde_json::json!({"backend": name, "nodes": NODES, "samples": samples,
+            "cache": {"text_capacity": CACHE.text_capacity,
+                "geometry_capacity": CACHE.geometry_capacity, "geometry_bytes": CACHE.geometry_bytes},
             "encoding_ms": encoding_ms, "export_ms": export_ms, "ffmpeg": ffmpeg,
             "encoder": encoder_name, "hardware_encoding": hardware_encoding})
     );

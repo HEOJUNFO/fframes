@@ -32,7 +32,10 @@ impl<'a, TSkiaBackend: SkiaBackend> SkiaFFramesRenderer<'a, TSkiaBackend> {
 impl<TBackend: SkiaBackend> FFramesRenderBackend for SkiaFFramesRenderer<'_, TBackend> {
     /// Skia previews on the same GPU context: shaders and filters look like in the video.
     fn frame_renderer(&self) -> Option<Box<dyn FrameRenderer + '_>> {
-        Some(Box::new(crate::SkiaFrameRenderer::new(self.backend)))
+        Some(Box::new(
+            crate::SkiaFrameRenderer::new(self.backend)
+                .with_cache_config(self.pipeline_config.cache),
+        ))
     }
 
     fn render_frame<'a, 'media: 'a, TVideo: Video + Sync + Sized>(
@@ -43,19 +46,22 @@ impl<TBackend: SkiaBackend> FFramesRenderBackend for SkiaFFramesRenderer<'_, TBa
         font_db: &usvgr::fontdb::Database,
         ctx: fframes::FFramesContext<'a, 'media>,
     ) -> FFramesRendererResult<Vec<u8>> {
-        let mut converter_cache = usvgr::Cache::default();
+        let mut converter_cache =
+            usvgr::Cache::new_with_text_cache(self.pipeline_config.cache.text_capacity);
         let rtree = fframes::render_frame_guarded(video, frame, &ctx)?.into_svg_tree(
             usvg_options,
             &mut converter_cache,
             font_db,
         )?;
 
-        let frame = crate::SkiaFrameRenderer::new(self.backend).render_tree(
-            &rtree,
-            TVideo::BACKGROUND_COLOR,
-            ctx.current_video_size.width as u32,
-            ctx.current_video_size.height as u32,
-        )?;
+        let frame = crate::SkiaFrameRenderer::new(self.backend)
+            .with_cache_config(self.pipeline_config.cache)
+            .render_tree(
+                &rtree,
+                TVideo::BACKGROUND_COLOR,
+                ctx.current_video_size.width as u32,
+                ctx.current_video_size.height as u32,
+            )?;
 
         Ok(frame.pixels)
     }

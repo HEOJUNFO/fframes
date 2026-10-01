@@ -1,5 +1,8 @@
 mod skia_pipeline;
 
+mod cache;
+pub use cache::SkiaCacheConfig;
+
 mod backends;
 pub use backends::*;
 

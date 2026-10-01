@@ -54,6 +54,7 @@ pub fn apply_fit(canvas: &Canvas, tree: &usvgr::Tree, width: i32, height: i32) {
 /// GPU context and render cache between frames.
 pub struct SkiaFrameRenderer<'a, TBackend: SkiaBackend> {
     backend: &'a TBackend,
+    cache_config: crate::SkiaCacheConfig,
     surface: Option<(Surface, Option<gpu::DirectContext>)>,
     render_cache: crate::render::RenderCache,
 }
@@ -62,13 +63,25 @@ impl<'a, TBackend: SkiaBackend> SkiaFrameRenderer<'a, TBackend> {
     pub fn new(backend: &'a TBackend) -> Self {
         Self {
             backend,
+            cache_config: crate::SkiaCacheConfig::default(),
             surface: None,
             render_cache: crate::render::RenderCache::new(),
         }
     }
+
+    /// Uses these cache limits for subsequent frames. Clears previously cached render resources.
+    pub fn with_cache_config(mut self, config: crate::SkiaCacheConfig) -> Self {
+        self.cache_config = config;
+        self.render_cache = crate::render::RenderCache::with_config(config);
+        self
+    }
 }
 
 impl<TBackend: SkiaBackend> FrameRenderer for SkiaFrameRenderer<'_, TBackend> {
+    fn svg_text_cache_capacity(&self) -> Option<usize> {
+        Some(self.cache_config.text_capacity)
+    }
+
     fn render_tree(
         &mut self,
         tree: &usvgr::Tree,

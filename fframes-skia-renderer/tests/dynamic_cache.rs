@@ -4,7 +4,7 @@
 use std::fmt::Write;
 
 use fframes::{Color, FrameRenderer, usvgr};
-use fframes_skia_renderer::{SkiaBackend, SkiaCpuCtx, SkiaFrameRenderer};
+use fframes_skia_renderer::{SkiaBackend, SkiaCacheConfig, SkiaCpuCtx, SkiaFrameRenderer};
 
 const SIZE: usize = 100;
 
@@ -83,8 +83,8 @@ fn frames() -> Vec<usvgr::Tree> {
     frames
 }
 
-fn compare_frames(backend: &impl SkiaBackend) {
-    let mut cached = SkiaFrameRenderer::new(backend);
+fn compare_frames(backend: &impl SkiaBackend, config: SkiaCacheConfig) {
+    let mut cached = SkiaFrameRenderer::new(backend).with_cache_config(config);
     let mut previous = None;
     let mut changed = false;
     let frames = frames();
@@ -109,7 +109,10 @@ fn compare_frames(backend: &impl SkiaBackend) {
 
 #[test]
 fn dynamic_resources_preserve_raster_output() {
-    compare_frames(&SkiaCpuCtx::new(SIZE, SIZE));
+    let backend = SkiaCpuCtx::new(SIZE, SIZE);
+    for config in configurations() {
+        compare_frames(&backend, config);
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -121,5 +124,23 @@ fn dynamic_resources_preserve_metal_output() {
     }
     let backend =
         fframes_skia_renderer::metal::SkiaMetalCtx::new(SIZE, SIZE).expect("Metal context");
-    compare_frames(&backend);
+    for config in configurations() {
+        compare_frames(&backend, config);
+    }
+}
+
+fn configurations() -> [SkiaCacheConfig; 3] {
+    [
+        SkiaCacheConfig::default(),
+        SkiaCacheConfig {
+            text_capacity: 0,
+            geometry_capacity: 0,
+            geometry_bytes: 0,
+        },
+        SkiaCacheConfig {
+            text_capacity: 100_000,
+            geometry_capacity: 100_000,
+            geometry_bytes: 100_000 * 512,
+        },
+    ]
 }
