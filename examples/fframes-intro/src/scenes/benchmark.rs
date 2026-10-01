@@ -1,5 +1,5 @@
 //! The drop after the riser. Remotion and fframes render the same 100,000
-//! text nodes; the race runs as a time-lapse of the measured wall-clock times.
+//! elements; the race runs as a time-lapse of complete MP4 export times.
 
 use fframes::{Color, Duration, FFramesContext, Frame, Scene, ShaderUniforms, Svgr};
 
@@ -61,14 +61,14 @@ fn race(lb: f32) -> Svgr<'static> {
     let lanes = [
         (
             BENCH_REMOTION_LABEL,
-            "CHROME + REACT, SCREENSHOT PER FRAME",
+            "CHROME + REACT → H.264 MP4",
             BENCH_REMOTION_S,
             GREY,
             470.0,
         ),
         (
             BENCH_FFRAMES_LABEL,
-            "RUST, SVG TREE → GPU",
+            "RUST + SKIA → H.264 MP4",
             BENCH_FFRAMES_S,
             ORANGE,
             700.0,
@@ -106,7 +106,7 @@ fn race(lb: f32) -> Svgr<'static> {
     fframes::svgr!(
         <g opacity={1.0 - exit}>
             {Slam::new(150.0, 250.0, "100,000 TEXT NODES", DISPLAY, 120.0, BONE).draw(lb, 0.0, 140.0)}
-            {label(154.0, 310.0, "30 FRAMES · 1000×1000 · PNG · SAME LAYOUT, SAME FONT".to_owned(), GREY, 20.0, "start")}
+            {label(154.0, 310.0, "30 FRAMES · 1000×1000 · H.264 MP4 · SAME LAYOUT, SAME FONT".to_owned(), GREY, 20.0, "start")}
             {rows}
             <g opacity={prog(lb, RACE_START, RACE_START + 0.2)}>
                 {label(1770.0, 310.0, format!("TIME-LAPSE ×{speedup:.1} · MEASURED WALL CLOCK"), ORANGE, 20.0, "end")}
@@ -131,7 +131,7 @@ fn result(l: f32) -> Svgr<'static> {
             <text x="150" y={900.0 + (1.0 - word) * 60.0} font-family={DISPLAY} font-size="120" letter-spacing="-4" fill={INK} opacity={prog(l, 1.0, 1.08)}>"FASTER THAN REMOTION"</text>
             <g font-family={MONO} font-weight="600" font-size="22" letter-spacing="4" fill={INK}>
                 <text x="150" y="170">"SAME 100,000 TEXT NODES"</text>
-                <text x="1770" y="170" text-anchor="end">"NO VIDEO ENCODING · MEDIAN WALL CLOCK"</text>
+                <text x="1770" y="170" text-anchor="end">"COMPLETE MP4 · MEDIAN WALL CLOCK"</text>
             </g>
             <rect x="150" y="196" width="1620" height="3" fill={INK} />
         </g>
@@ -167,7 +167,7 @@ fn table(l: f32) -> Svgr<'static> {
             {Slam::new(150.0, 300.0, "THE NUMBERS", DISPLAY, 110.0, BONE).draw(l, 0.0, 120.0)}
             {label(1740.0, 400.0, "WALL CLOCK".to_owned(), GREY, 18.0, "end")}
             {items}
-            {label(154.0, 860.0, "VIDEO ENCODING NOT MEASURED".to_owned(), BONE, 18.0, "start")}
+            {label(154.0, 860.0, "RENDER + ENCODE + MP4".to_owned(), BONE, 18.0, "start")}
             {label(154.0, 900.0, BENCH_NOTE.to_owned(), GREY, 18.0, "start")}
             {label(154.0, 940.0, "REPRODUCE: RENDER-BENCH/VS-REMOTION IN THE FFRAMES REPO".to_owned(), ORANGE, 18.0, "start")}
         </g>

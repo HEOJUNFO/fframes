@@ -9,9 +9,7 @@ import { bundle } from "@remotion/bundler";
 import {
   openBrowser,
   selectComposition,
-  renderFrames,
   renderMedia,
-  stitchFramesToVideo,
 } from "@remotion/renderer";
 import { summarize, markdown } from "./report.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -39,47 +37,6 @@ async function remotionWorker(config) {
       timeoutInMilliseconds: config.timeout,
       logLevel: "error",
     });
-    const samples = [];
-    const images = new Map();
-    let dom;
-    const { assetsInfo } = await renderFrames({
-      composition,
-      serveUrl: config.bundle,
-      puppeteerInstance: browser,
-      concurrency: 1,
-      frameRange: [0, config.warmup + config.frames - 1],
-      imageFormat: "png",
-      outputDir: null,
-      timeoutInMilliseconds: config.timeout,
-      logLevel: "error",
-      onStart: ({ parallelEncoding, resolvedConcurrency }) => {
-        if (parallelEncoding || resolvedConcurrency !== 1)
-          throw new Error("unexpected Remotion rendering pipeline");
-      },
-      onFrameBuffer: async (buffer, frame) => {
-        if (frame >= config.warmup) images.set(frame, buffer);
-        // Inspect the real Remotion page during warm-up, outside measured frames.
-        if (frame === config.warmup - 1) {
-          for (const page of await browser.pages()) {
-            const counts = await page.evaluate(() => ({
-              rectangles: document.querySelectorAll("svg rect").length,
-              texts: document.querySelectorAll("svg text").length,
-            }));
-            if (counts.rectangles + counts.texts === config.nodes) dom = counts;
-          }
-          if (!dom || dom.texts !== Math.ceil(config.nodes / 100))
-            throw new Error("incorrect Remotion DOM element count");
-        }
-      },
-      onFrameUpdate: (_count, frame, total_ms) => {
-        if (frame >= config.warmup) samples.push({ frame, total_ms });
-      },
-    });
-    samples.sort((a, b) => a.frame - b.frame);
-    // Remotion's per-frame timing covers seek, effects, raster and PNG capture.
-    // Save captured buffers only after rendering has finished.
-    for (const [frame, buffer] of images)
-      await fs.writeFile(path.join(config.directory, `${frame}.png`), buffer);
     const hardwareEncoding = process.platform === "darwin";
     const encoder = hardwareEncoding ? "h264_videotoolbox" : "libx264";
     const encodingCommands = [];
@@ -109,55 +66,92 @@ async function remotionWorker(config) {
         return command;
       },
     };
-    // Remotion encodes its captured PNGs; include decoding, setup and MP4 writes.
-    await fs.mkdir(assetsInfo.downloadMap.stitchFrames, { recursive: true });
-    const encodeStart = performance.now();
-    await stitchFramesToVideo({
-      ...encoding,
-      assetsInfo: {
-        ...assetsInfo,
-        imageSequenceName: path.join(config.directory, "%d.png"),
-        firstFrameIndex: config.warmup,
-        chunkLengthInSeconds: config.frames / composition.fps,
-      },
-      fps: composition.fps,
-      width: composition.width,
-      height: composition.height,
-      outputLocation: path.join(config.directory, "encoded.mp4"),
-    });
-    const encoding_ms = performance.now() - encodeStart;
-    const exportStart = performance.now();
-    await renderMedia({
+    const options = {
       ...encoding,
       composition,
       serveUrl: config.bundle,
       puppeteerInstance: browser,
       concurrency: 1,
-      frameRange: [config.warmup, config.warmup + config.frames - 1],
-      imageFormat: "png",
       timeoutInMilliseconds: config.timeout,
       logLevel: "error",
+    };
+    const warmup = path.join(config.directory, "warmup.mp4");
+    await renderMedia({
+      ...options,
+      frameRange: [0, config.warmup - 1],
+      outputLocation: warmup,
+    });
+    encodingCommands.length = 0;
+    const start = performance.now();
+    await renderMedia({
+      ...options,
+      frameRange: [config.warmup, config.warmup + config.frames - 1],
       outputLocation: path.join(config.directory, "export.mp4"),
     });
-    const export_ms = performance.now() - exportStart;
+    const export_ms = performance.now() - start;
+    await fs.unlink(warmup);
     return {
-      samples,
-      encoding_ms,
       export_ms,
       encoder,
       hardware_encoding: hardwareEncoding,
       encoding_commands: encodingCommands,
-      renderer: "@remotion/renderer renderFrames",
+      renderer: "@remotion/renderer renderMedia",
       concurrency: 1,
       browser: execFileSync(config.chrome, ["--version"], {
         encoding: "utf8",
       }).trim(),
       chromium_options: chromiumOptions,
-      dom,
     };
   } finally {
     await browser.close({ silent: true });
   }
+}
+function inspectVideo(file, plan) {
+  const probe = JSON.parse(
+    execFileSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-count_frames",
+        "-show_entries",
+        "stream=codec_name,width,height,pix_fmt,color_range,avg_frame_rate,nb_read_frames,duration:format=size",
+        "-of",
+        "json",
+        file,
+      ],
+      { encoding: "utf8" }
+    )
+  );
+  const video = probe.streams[0];
+  const [numerator, denominator] = video.avg_frame_rate.split("/").map(Number);
+  const fps = numerator / denominator;
+  const frames = Number(video.nb_read_frames);
+  const duration = Number(video.duration);
+  if (
+    video.codec_name !== "h264" ||
+    video.width !== 1000 ||
+    video.height !== 1000 ||
+    !["yuv420p", "yuvj420p"].includes(video.pix_fmt) ||
+    fps !== 30 ||
+    frames !== plan.frames ||
+    !Number.isFinite(duration) ||
+    Math.abs(duration - plan.frames / fps) > 0.001
+  )
+    throw new Error(`incorrect MP4 output: ${JSON.stringify(video)}`);
+  return {
+    frames,
+    fps,
+    duration_s: duration,
+    width: video.width,
+    height: video.height,
+    codec: video.codec_name,
+    pixel_format: video.pix_fmt,
+    color_range: video.color_range,
+    bytes: Number(probe.format.size),
+  };
 }
 async function directoryHash(directory) {
   const hash = createHash("sha256");
@@ -207,9 +201,8 @@ if (args[0] === "--worker") {
     if (err.code !== "ENOENT") throw err;
   }
   const report = {
-    schema_version: 7,
-    comparison:
-      "Remotion vs fframes + Skia: render-to-PNG, encoding and MP4 export",
+    schema_version: 8,
+    comparison: "Remotion vs fframes + Skia: complete H.264 MP4 export",
     encoding: {
       codec: "h264",
       target_bitrate: 8000000,
@@ -285,6 +278,7 @@ if (args[0] === "--worker") {
       console.error(
         `round ${round + 1}/${plan.rounds}: ${nodes} nodes, ${engine}`
       );
+      const loadBefore = os.loadavg();
       const result =
         engine !== "remotion"
           ? await isolated(
@@ -304,6 +298,7 @@ if (args[0] === "--worker") {
         engine,
         round,
         status: result.status,
+        load_before: loadBefore,
         load_after: os.loadavg(),
         code: result.code,
         signal: result.signal,
@@ -312,6 +307,9 @@ if (args[0] === "--worker") {
         if (result.status !== "ok")
           throw new Error(result.error || result.status);
         Object.assign(record, JSON.parse(result.stdout));
+        // Verify the completed file after the timer has stopped.
+        if (record.status === "ok")
+          record.video = inspectVideo(path.join(directory, "export.mp4"), plan);
       } catch (err) {
         record.status =
           result.status === "ok" ? "invalid-output" : result.status;

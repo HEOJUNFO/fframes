@@ -6,7 +6,7 @@ invocation_dir=$PWD
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "Usage: $0 [--chrome PATH] [--out DIR]"
   echo "Runs the fixed 100,000-element benchmark: 30 frames, 3 warm-up frames, 3 rounds."
-  echo "Measures render-to-PNG, H.264 encoding (VideoToolbox on macOS GPU) and complete MP4 export."
+  echo "Measures wall-clock time to render and finish a complete H.264 MP4."
   exit 0
 fi
 cd "$root"

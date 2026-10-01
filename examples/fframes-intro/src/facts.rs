@@ -14,13 +14,12 @@ pub const FRAMES: u64 = 7_650;
 /// libx264, with audio).
 pub const RENDER_SECONDS: f32 = 79.6;
 
-/// Median render-and-PNG seconds for 30 frames at 1000×1000.
+/// Median complete H.264 MP4 export seconds for 30 frames at 1000×1000.
 /// Measured on Apple M5 Max with Skia CPU, Metal and Remotion 4.0.529,
-/// serially, after three warm-up frames. Video encoding is excluded.
-pub const BENCH_REMOTION_S: f32 = 102.580_5;
-pub const BENCH_FFRAMES_S: f32 = 2.896_494;
-pub const BENCH_FFRAMES_CPU_S: f32 = 5.794_131;
+/// serially, after a three-frame MP4 warm-up. Encoding and file writes are included.
+pub const BENCH_REMOTION_S: f32 = 104.54;
+pub const BENCH_FFRAMES_S: f32 = 1.525_817;
+pub const BENCH_FFRAMES_CPU_S: f32 = 5.708_154;
 pub const BENCH_REMOTION_LABEL: &str = "REMOTION 4.0";
 pub const BENCH_FFRAMES_LABEL: &str = "FFRAMES · SKIA ON METAL";
-pub const BENCH_NOTE: &str =
-    "M5 MAX · REMOTION 4.0.529, SERIAL, PRE-BUNDLED · VIDEO ENCODING NOT MEASURED · MEDIANS";
+pub const BENCH_NOTE: &str = "M5 MAX · REMOTION 4.0.529 · SERIAL · H.264 MP4 · MEDIANS";
