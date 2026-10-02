@@ -589,10 +589,9 @@ mod vulkan_video {
         }
     }
 
-    /// The whole way through a Vulkan Video encoder. Skipped where the driver has none.
-    /// A driver whose encoder produces a damaged stream fails here, whatever it is fed.
-    #[test]
-    fn vulkan_video_encoders_read_the_frames_skia_rendered() {
+    /// Renders through a Vulkan Video encoder and checks the decoded colors. Skipped where
+    /// the driver has no such encoder.
+    fn renders_through(encoder: &str) {
         let Ok(vulkan) =
             SkiaVulkanCtx::new_shared_with_encoder(TwoColors720::WIDTH, TwoColors720::HEIGHT)
         else {
@@ -600,56 +599,67 @@ mod vulkan_video {
             return;
         };
 
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
-            let dir = std::env::temp_dir().join(format!(
-                "fframes-skia-export-{}-{encoder}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            let output = dir.join("out.mp4");
-            let options = RenderOptions {
-                logger: fframes::fframes_logger::FFramesLoggerVariant::Silent,
-                tmp_files_directory: Some(&dir.join("chunks")),
-                video_encoder_options: EncoderOptions {
-                    preferred_encoder: Some(encoder),
-                    ..Default::default()
-                },
+        let dir = std::env::temp_dir().join(format!(
+            "fframes-skia-export-{}-{encoder}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("out.mp4");
+        let options = RenderOptions {
+            logger: fframes::fframes_logger::FFramesLoggerVariant::Silent,
+            tmp_files_directory: Some(&dir.join("chunks")),
+            video_encoder_options: EncoderOptions {
+                preferred_encoder: Some(encoder),
+                // Mesa's Intel driver (25.1, `ANV_DEBUG=video-encode`) writes HEVC that
+                // decodes washed out below the quantizer 26, whatever feeds the encoder.
+                codec_params: Some(&[("qp", "26")]),
                 ..Default::default()
-            };
+            },
+            ..Default::default()
+        };
 
-            let info = fframes::VideoEncoderInfo::for_output(
-                &output,
-                (
-                    TwoColors720::WIDTH as i32,
-                    TwoColors720::HEIGHT as i32,
-                    TwoColors720::FPS as i32,
-                ),
-                &options.video_encoder_options,
-            )
-            .unwrap();
-            let hardware = info.name() == encoder
-                && fframes_skia_renderer::negotiate(&vulkan, SkiaFrameExport::Auto, &info)
-                    .is_ok_and(|input| input.is_hardware());
-            if !hardware {
-                eprintln!("skipping {encoder}: the driver has no such encoder");
-                continue;
-            }
-
-            fframes::render(
-                &output,
-                &TwoColors720,
-                SkiaFFramesRenderer::new_vulkan(&vulkan, SkiaPipelineConfig::default()).unwrap(),
-                &options,
-            )
-            .unwrap_or_else(|err| panic!("{encoder}: {err:?}"));
-
-            let mut decoder = unsafe { FFmpegDecoder::new(&output, TwoColors720::FPS, 1) }.unwrap();
-            assert_color_close(center_pixel(&mut decoder, 0), [255, 0, 0], 0);
-            assert_color_close(center_pixel(&mut decoder, 32), [0, 0, 255], 32);
-            drop(decoder);
-
-            let _ = std::fs::remove_dir_all(&dir);
+        let info = fframes::VideoEncoderInfo::for_output(
+            &output,
+            (
+                TwoColors720::WIDTH as i32,
+                TwoColors720::HEIGHT as i32,
+                TwoColors720::FPS as i32,
+            ),
+            &options.video_encoder_options,
+        )
+        .unwrap();
+        let hardware = info.name() == encoder
+            && fframes_skia_renderer::negotiate(&vulkan, SkiaFrameExport::Auto, &info)
+                .is_ok_and(|input| input.is_hardware());
+        if !hardware {
+            eprintln!("skipping {encoder}: the driver has no such encoder");
+            return;
         }
+
+        fframes::render(
+            &output,
+            &TwoColors720,
+            SkiaFFramesRenderer::new_vulkan(&vulkan, SkiaPipelineConfig::default()).unwrap(),
+            &options,
+        )
+        .unwrap_or_else(|err| panic!("{encoder}: {err:?}"));
+
+        let mut decoder = unsafe { FFmpegDecoder::new(&output, TwoColors720::FPS, 1) }.unwrap();
+        assert_color_close(center_pixel(&mut decoder, 0), [255, 0, 0], 0);
+        assert_color_close(center_pixel(&mut decoder, 32), [0, 0, 255], 32);
+        drop(decoder);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hevc_vulkan_reads_the_frames_skia_rendered() {
+        renders_through("hevc_vulkan");
+    }
+
+    #[test]
+    fn h264_vulkan_reads_the_frames_skia_rendered() {
+        renders_through("h264_vulkan");
     }
 
     #[test]
