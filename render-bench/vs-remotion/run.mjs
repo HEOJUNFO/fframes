@@ -6,12 +6,9 @@ import { execFileSync } from "node:child_process";
 import { isolated } from "./process.mjs";
 import { createHash } from "node:crypto";
 import { bundle } from "@remotion/bundler";
-import {
-  openBrowser,
-  selectComposition,
-  renderMedia,
-} from "@remotion/renderer";
-import { summarize, markdown } from "./report.mjs";
+import { remotionWorker } from "./web.mjs";
+import { ffmpegWorker } from "./ffmpeg.mjs";
+import { engines, summarize, markdown } from "./report.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const args = process.argv.slice(2);
@@ -22,90 +19,6 @@ const option = (name, fallback) => {
 const git = (...a) =>
   execFileSync("git", ["-C", root, ...a], { encoding: "utf8" }).trim();
 
-async function remotionWorker(config) {
-  const chromiumOptions = { disableWebSecurity: false };
-  const browser = await openBrowser("chrome", {
-    browserExecutable: config.chrome,
-    chromiumOptions,
-    logLevel: "error",
-  });
-  try {
-    const composition = await selectComposition({
-      serveUrl: config.bundle,
-      id: "MixedGrid",
-      puppeteerInstance: browser,
-      timeoutInMilliseconds: config.timeout,
-      logLevel: "error",
-    });
-    const hardwareEncoding = process.platform === "darwin";
-    const encoder = hardwareEncoding ? "h264_videotoolbox" : "libx264";
-    const encodingCommands = [];
-    const encoding = {
-      codec: "h264",
-      ...(hardwareEncoding ? {} : { x264Preset: "medium" }),
-      videoBitrate: "8M",
-      gopSize: 30,
-      pixelFormat: "yuv420p",
-      muted: true,
-      hardwareAcceleration: hardwareEncoding ? "required" : "disable",
-      colorSpace: "bt601",
-      ffmpegOverride: ({ args }) => {
-        const selected = args[args.indexOf("-c:v") + 1];
-        if (selected !== "copy" && selected !== encoder)
-          throw new Error(`unexpected encoder: ${selected}`);
-        const command = [
-          ...args.slice(0, -1),
-          "-threads",
-          "1",
-          ...(hardwareEncoding && selected !== "copy"
-            ? ["-allow_sw", "0"]
-            : []),
-          args.at(-1),
-        ];
-        encodingCommands.push(command);
-        return command;
-      },
-    };
-    const options = {
-      ...encoding,
-      composition,
-      serveUrl: config.bundle,
-      puppeteerInstance: browser,
-      concurrency: 1,
-      timeoutInMilliseconds: config.timeout,
-      logLevel: "error",
-    };
-    const warmup = path.join(config.directory, "warmup.mp4");
-    await renderMedia({
-      ...options,
-      frameRange: [0, config.warmup - 1],
-      outputLocation: warmup,
-    });
-    encodingCommands.length = 0;
-    const start = performance.now();
-    await renderMedia({
-      ...options,
-      frameRange: [config.warmup, config.warmup + config.frames - 1],
-      outputLocation: path.join(config.directory, "export.mp4"),
-    });
-    const export_ms = performance.now() - start;
-    await fs.unlink(warmup);
-    return {
-      export_ms,
-      encoder,
-      hardware_encoding: hardwareEncoding,
-      encoding_commands: encodingCommands,
-      renderer: "@remotion/renderer renderMedia",
-      concurrency: 1,
-      browser: execFileSync(config.chrome, ["--version"], {
-        encoding: "utf8",
-      }).trim(),
-      chromium_options: chromiumOptions,
-    };
-  } finally {
-    await browser.close({ silent: true });
-  }
-}
 function inspectVideo(file, plan) {
   const probe = JSON.parse(
     execFileSync(
@@ -166,10 +79,15 @@ async function directoryHash(directory) {
 }
 if (args[0] === "--worker") {
   const config = JSON.parse(await fs.readFile(args[1], "utf8"));
-  console.log(JSON.stringify(await remotionWorker(config)));
+  const worker =
+    config.engine === "remotion-ffmpeg" ? ffmpegWorker : remotionWorker;
+  console.log(JSON.stringify(await worker(config)));
 } else {
   for (let i = 0; i < args.length; i += 2) {
-    if (!["--chrome", "--out", "--binary"].includes(args[i]) || !args[i + 1])
+    if (
+      !["--chrome", "--ffmpeg-chrome", "--out", "--binary"].includes(args[i]) ||
+      !args[i + 1]
+    )
       throw new Error(`unknown or incomplete option: ${args[i]}`);
   }
   const plan = {
@@ -180,7 +98,18 @@ if (args[0] === "--worker") {
     warmup: 3,
     timeout: 600000,
     backends: ["cpu", "skia-gpu-if-available"],
-    chrome: option("chrome", process.env.CHROME_PATH ?? "/usr/bin/chromium"),
+    engines,
+    ffmpeg_chrome: option(
+      "ffmpeg-chrome",
+      process.env.FFMPEG_CHROME_PATH ?? null
+    ),
+    chrome: option(
+      "chrome",
+      process.env.CHROME_PATH ??
+        (process.platform === "darwin"
+          ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          : "/usr/bin/google-chrome")
+    ),
   };
   const binary = path.resolve(
     option("binary", path.join(root, "target/release/vs-remotion-bench"))
@@ -201,18 +130,20 @@ if (args[0] === "--worker") {
     if (err.code !== "ENOENT") throw err;
   }
   const report = {
-    schema_version: 9,
+    schema_version: 11,
     comparison:
-      "Remotion vs fframes CPU and Skia GPU: complete H.264 MP4 export",
+      "fframes CPU and Skia GPU vs Remotion + FFmpeg and Remotion + MediaBunny: complete H.264 MP4 export",
     encoding: {
       codec: "h264",
       target_bitrate: 8000000,
       cpu_encoder: "libx264 medium",
       macos_gpu_encoder: "h264_videotoolbox",
-      macos_remotion_encoder: "h264_videotoolbox",
+      remotion_ffmpeg_encoder:
+        process.platform === "darwin" ? "h264_videotoolbox" : "libx264 medium",
+      remotion_mediabunny_encoder: "WebCodecs H.264, prefer-hardware",
       gop: 30,
       pixel_format: "yuv420p",
-      codec_threads: 1,
+      native_codec_threads: 1,
       fps: 30,
       audio: false,
     },
@@ -229,6 +160,11 @@ if (args[0] === "--worker") {
       remotion: JSON.parse(
         await fs.readFile(path.join(here, "node_modules/remotion/package.json"))
       ).version,
+      mediabunny: JSON.parse(
+        await fs.readFile(
+          path.join(here, "node_modules/mediabunny/package.json")
+        )
+      ).version,
       react: JSON.parse(
         await fs.readFile(path.join(here, "node_modules/react/package.json"))
       ).version,
@@ -244,13 +180,25 @@ if (args[0] === "--worker") {
     },
     records: [],
   };
-  const serveUrl = await bundle({
+  const webBundle = await bundle({
     entryPoint: path.join(here, "browser.jsx"),
     outDir: path.join(out, "remotion-bundle"),
     publicDir: path.join(here, "media"),
     enableCaching: false,
+    ignoreRegisterRootWarning: true,
+    webpackOverride: config => ({
+      ...config,
+      entry: path.join(here, "browser.jsx"),
+    }),
   });
-  report.environment.browser_bundle_sha256 = await directoryHash(serveUrl);
+  const serverBundle = await bundle({
+    entryPoint: path.join(here, "server.jsx"),
+    outDir: path.join(out, "remotion-ffmpeg-bundle"),
+    publicDir: path.join(here, "media"),
+    enableCaching: false,
+  });
+  report.environment.mediabunny_bundle_sha256 = await directoryHash(webBundle);
+  report.environment.ffmpeg_bundle_sha256 = await directoryHash(serverBundle);
   const persist = async () => {
     report.summary = summarize(report.records, plan);
     await fs.writeFile(
@@ -261,7 +209,6 @@ if (args[0] === "--worker") {
   };
   for (let round = 0; round < plan.rounds; round++) {
     const nodes = plan.nodes;
-    const engines = ["fframes", "fframes-gpu", "remotion"];
     const order = engines.map((_, i) => engines[(i + round) % engines.length]);
     for (const engine of order) {
       const directory = path.join(out, `${nodes}-${engine}-${round}`);
@@ -272,7 +219,7 @@ if (args[0] === "--worker") {
         engine,
         round,
         directory,
-        bundle: serveUrl,
+        bundle: engine === "remotion-ffmpeg" ? serverBundle : webBundle,
       };
       const configPath = path.join(directory, "config.json");
       await fs.writeFile(configPath, JSON.stringify(config));
@@ -280,20 +227,19 @@ if (args[0] === "--worker") {
         `round ${round + 1}/${plan.rounds}: ${nodes} nodes, ${engine}`
       );
       const loadBefore = os.loadavg();
-      const result =
-        engine !== "remotion"
-          ? await isolated(
-              binary,
-              [engine === "fframes" ? "cpu" : "gpu", directory],
-              plan.timeout,
-              path.join(directory, "process.log")
-            )
-          : await isolated(
-              process.execPath,
-              [fileURLToPath(import.meta.url), "--worker", configPath],
-              plan.timeout,
-              path.join(directory, "process.log")
-            );
+      const result = engine.startsWith("fframes")
+        ? await isolated(
+            binary,
+            [engine === "fframes" ? "cpu" : "gpu", directory],
+            plan.timeout,
+            path.join(directory, "process.log")
+          )
+        : await isolated(
+            process.execPath,
+            [fileURLToPath(import.meta.url), "--worker", configPath],
+            plan.timeout,
+            path.join(directory, "process.log")
+          );
       const record = {
         nodes,
         engine,
