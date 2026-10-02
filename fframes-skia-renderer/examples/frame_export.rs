@@ -14,8 +14,9 @@
 //!     --example frame_export -- --encoder h264_vulkan
 //! ```
 //!
-//! `--frames N` sets the number of frames (240), `--pixel-format nv12` the requested format
-//! and `--out DIR` the directory of the rendered files.
+//! `--frames N` sets the number of frames (240), `--pixel-format nv12` the requested format,
+//! `--param key=value` an option of the encoder (repeatable) and `--out DIR` the directory
+//! of the rendered files.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -71,6 +72,7 @@ struct Args {
     frames: usize,
     encoder: Option<String>,
     pixel_format: AVPixelFormat,
+    params: Vec<(String, String)>,
     out: PathBuf,
 }
 
@@ -79,6 +81,7 @@ fn parse_args() -> Args {
         frames: 240,
         encoder: None,
         pixel_format: AVPixelFormat::AV_PIX_FMT_YUV420P,
+        params: Vec::new(),
         out: std::env::temp_dir().join("fframes-frame-export"),
     };
 
@@ -93,6 +96,11 @@ fn parse_args() -> Args {
             "--frames" => args.frames = value().parse().expect("--frames takes a number"),
             "--encoder" => args.encoder = Some(value()),
             "--out" => args.out = PathBuf::from(value()),
+            "--param" => {
+                let param = value();
+                let (key, value) = param.split_once('=').expect("--param takes key=value");
+                args.params.push((key.to_owned(), value.to_owned()));
+            }
             "--pixel-format" => {
                 args.pixel_format = match value().as_str() {
                     "yuv420p" => AVPixelFormat::AV_PIX_FMT_YUV420P,
@@ -199,9 +207,15 @@ fn main() {
         .collect();
 
     let skia = backend(width, height);
+    let params: Vec<(&str, &str)> = args
+        .params
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let encoder_options = EncoderOptions {
         preferred_encoder: args.encoder.as_deref(),
         pixel_format: args.pixel_format,
+        codec_params: (!params.is_empty()).then_some(params.as_slice()),
         ..Default::default()
     };
     let output = |mode: SkiaFrameExport| args.out.join(format!("{mode:?}.mp4"));
