@@ -408,7 +408,7 @@ fn aftermath(t: f32) -> Svgr<'static> {
             {mono(151.0, 686.0, 22.0, "112.274s → 1.514s / COMPLETE H.264 MP4", "#b8b0ad")}
             {mono(151.0, 774.0, 22.0, "OPEN DATA / BENCHMARK", LIME)}
             {mono(151.0, 813.0, 24.0, "github.com/dmtrKovalenko/fframes", PAPER)}
-            {mono(151.0, 846.0, 20.0, "/tree/bench/mediabunny-m5/render-bench/vs-remotion", PAPER)}
+            {mono(151.0, 846.0, 20.0, "/tree/main/render-bench/vs-remotion", PAPER)}
         </g>
         <g transform={format!("translate({hero_x} {hero_y}) rotate({}) scale({} {})",
             -5.0 + jump - 22.0 * (jump * std::f32::consts::PI).sin(),
