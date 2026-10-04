@@ -55,7 +55,14 @@ unsafe fn duration_tag(stream: *mut AVStream) -> Option<i64> {
                 .is_ascii_digit()
                 .then(|| acc * 10 + i64::from(digit - b'0'))
         })?;
-    let total = ((hours * 60 + minutes) * 60 + seconds) * 1_000_000 + micros;
+    // A malformed tag can be arbitrarily large; treat an overflow like a missing tag.
+    let total = hours
+        .checked_mul(60)?
+        .checked_add(minutes)?
+        .checked_mul(60)?
+        .checked_add(seconds)?
+        .checked_mul(1_000_000)?
+        .checked_add(micros)?;
     (total > 0).then_some(total)
 }
 
